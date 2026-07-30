@@ -115,7 +115,9 @@ static void sensor_thread_fn(void *a, void *b, void *c)
     uint32_t seconds = 0;
     uint32_t ppg_cnt = 0, baro_cnt = 0;
     bool baro_pending = false;
+    bool want_baro_temp = false;
     int64_t next_wake = k_uptime_get();
+    int64_t next_second = k_uptime_get() + 1000;
 
     while (1) {
         struct tick_sample ts = {0};
@@ -129,7 +131,12 @@ static void sensor_thread_fn(void *a, void *b, void *c)
         /* MS5611 at 100 Hz: read previous conversion, start next.
          * One cycle per second converts temperature instead.
          */
-        if (d->baro_ok_mask != 0) {
+        /* Baro at 50 Hz (every 2nd tick): read the conversion started
+         * two ticks ago (20 ms >> 4.6 ms at OSR 2048), start the next.
+         * Halving the baro I2C traffic keeps the whole tick under
+         * 10 ms; pressure content is low-frequency anyway.
+         */
+        if (d->baro_ok_mask != 0 && (tick & 1) == 0) {
             if (baro_pending && drv_ms5611_finish_conv() == 0) {
                 for (int i = 0; i < MS5611_COUNT; i++) {
                     drv_ms5611_get(i, &d->baro_pa[i], &d->baro_temp_c100[i]);
@@ -137,9 +144,8 @@ static void sensor_thread_fn(void *a, void *b, void *c)
                 baro_cnt++;
             }
 
-            bool temp_cycle = (tick % TICKS_PER_SECOND) == 0;
-
-            baro_pending = (drv_ms5611_start_conv(temp_cycle) == 0);
+            baro_pending = (drv_ms5611_start_conv(want_baro_temp) == 0);
+            want_baro_temp = false;
         }
         memcpy(ts.baro_pa, d->baro_pa, sizeof(ts.baro_pa));
 
@@ -171,13 +177,19 @@ static void sensor_thread_fn(void *a, void *b, void *c)
         }
 
         tick++;
-        if ((tick % TICKS_PER_SECOND) == 0) {
+        /* Wall-clock second boundary — rates are per REAL second, so
+         * they expose loop overruns instead of hiding them (a tick
+         * loop stuck at 46 Hz used to still print "100 Hz").
+         */
+        if (k_uptime_get() >= next_second) {
+            next_second += 1000;
             seconds++;
             d->ppg_rate = ppg_cnt;
             d->baro_rate = baro_cnt;
             ppg_cnt = baro_cnt = 0;
             print_summary(seconds);
             comm_manager_push_status(d->sd_ok);
+            want_baro_temp = true;  /* one temperature cycle per second */
         }
 
         /* Absolute-deadline scheduling: 10 ms period regardless of

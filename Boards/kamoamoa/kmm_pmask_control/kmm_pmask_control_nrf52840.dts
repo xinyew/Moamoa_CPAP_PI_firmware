@@ -127,6 +127,12 @@
  */
 &i2c0 {
 	status = "okay";
+	/* Fast mode is essential: ~26 mux-switched transactions per 10 ms
+	 * tick (4x PPG + baro cycle) do not fit at the 100 kHz default.
+	 * All devices (PCA9517A, TCA9546A, MAX30101, MS5611, SHT40,
+	 * TMP117) are 400 kHz capable.
+	 */
+	clock-frequency = <I2C_BITRATE_FAST>;
 	pinctrl-0 = <&i2c0_default>;
 	pinctrl-1 = <&i2c0_sleep>;
 	pinctrl-names = "default", "sleep";

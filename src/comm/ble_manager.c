@@ -85,6 +85,17 @@ static void connected(struct bt_conn *conn, uint8_t err)
         .timeout = 400,
     };
     bt_conn_le_param_update(conn, &param);
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+    /* 2M PHY halves airtime per frame — more margin for the 25/s
+     * stream on congested hosts (Windows/Web Bluetooth).
+     */
+    int phy_ret = bt_conn_le_phy_update(conn, BT_CONN_LE_PHY_PARAM_2M);
+
+    if (phy_ret) {
+        LOG_WRN("2M PHY request failed: %d (staying on 1M)", phy_ret);
+    }
+#endif
 }
 
 static struct bt_le_adv_param adv_param;  /* saved for re-advertise */
