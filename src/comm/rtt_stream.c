@@ -14,7 +14,7 @@
 LOG_MODULE_REGISTER(rtt_stream, LOG_LEVEL_INF);
 
 #define RTT_DATA_CHANNEL  1
-#define RTT_DATA_BUF_SIZE 2048
+#define RTT_DATA_BUF_SIZE 8192
 
 static uint8_t rtt_data_buf[RTT_DATA_BUF_SIZE];
 

@@ -29,6 +29,7 @@
 #include "tmp117_reader.h"
 #include "../drivers/driver_batt.h"
 #include "../drivers/driver_ms5611.h"
+#include "../comm/comm_manager.h"
 
 LOG_MODULE_REGISTER(sensor_mgr, LOG_LEVEL_INF);
 
@@ -117,10 +118,13 @@ static void sensor_thread_fn(void *a, void *b, void *c)
     int64_t next_wake = k_uptime_get();
 
     while (1) {
+        struct tick_sample ts = {0};
+
         /* PPG every tick (100 Hz x4) */
         if (ppg_reader_read(d->ppg) > 0) {
             ppg_cnt++;
         }
+        memcpy(ts.ppg, d->ppg, sizeof(ts.ppg));
 
         /* MS5611 at 100 Hz: read previous conversion, start next.
          * One cycle per second converts temperature instead.
@@ -137,6 +141,10 @@ static void sensor_thread_fn(void *a, void *b, void *c)
 
             baro_pending = (drv_ms5611_start_conv(temp_cycle) == 0);
         }
+        memcpy(ts.baro_pa, d->baro_pa, sizeof(ts.baro_pa));
+
+        /* Batch this tick into the BLE/RTT stream */
+        comm_manager_push_tick(&ts);
 
         /* SHT40: one sensor per second-third (each at 1 Hz) */
         uint32_t phase = tick % TICKS_PER_SECOND;
@@ -169,6 +177,7 @@ static void sensor_thread_fn(void *a, void *b, void *c)
             d->baro_rate = baro_cnt;
             ppg_cnt = baro_cnt = 0;
             print_summary(seconds);
+            comm_manager_push_status(d->sd_ok);
         }
 
         /* Absolute-deadline scheduling: 10 ms period regardless of

@@ -43,6 +43,7 @@ struct system_sensor_data {
     /* Battery + mask presence (1 Hz) */
     int32_t vbat_mv;
     bool mask_present;
+    bool sd_ok;   /* microSD initialised at boot (set by main) */
 
     /* Legacy single-SHT fields (comm compat) */
     int32_t sht_temp_c100;

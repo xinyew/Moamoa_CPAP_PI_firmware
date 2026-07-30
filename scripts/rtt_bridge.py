@@ -17,8 +17,10 @@ Usage:
 
 import argparse
 import asyncio
+import collections
 import struct
 import sys
+import threading
 
 import pylink
 import websockets
@@ -36,7 +38,7 @@ if not hasattr(pylink, "JLink"):
     )
 
 MAGIC = 0xC9A5
-FRAME_LEN = {0x01: 224, 0x02: 41}  # type -> length (comm_protocol.h)
+FRAME_LEN = {0x11: 204, 0x12: 43}  # v2 type -> length (comm_protocol.h)
 RTT_CHANNEL = 1
 
 clients = set()
@@ -69,19 +71,31 @@ class Reframer:
         return frames
 
 
-async def rtt_reader(jlink):
+def rtt_reader_thread(jlink, frame_q):
+    """Blocking tight loop in a dedicated thread — RTT throughput on the
+    EDU Mini scales with rtt_read call frequency (~5 B/call), so the
+    asyncio loop must never pace the reads.
+    """
     reframer = Reframer()
     while True:
-        data = jlink.rtt_read(RTT_CHANNEL, 4096)
+        # Drain the console channel too — a full DLL host buffer for
+        # ch0 throttles the whole RTT polling path.
+        jlink.rtt_read(0, 4096)
+        data = jlink.rtt_read(RTT_CHANNEL, 16384)
         if data:
             stats["bytes"] += len(data)
             for frame in reframer.feed(bytes(data)):
-                stats["data" if frame[2] == 0x01 else "status"] += 1
-                if clients:
-                    websockets.broadcast(clients, frame)
-            await asyncio.sleep(0.005)
-        else:
-            await asyncio.sleep(0.02)
+                stats["data" if frame[2] == 0x11 else "status"] += 1
+                frame_q.append(frame)
+
+
+async def frame_broadcaster(frame_q):
+    while True:
+        while frame_q:
+            frame = frame_q.popleft()
+            if clients:
+                websockets.broadcast(clients, frame)
+        await asyncio.sleep(0.005)
 
 
 async def stats_printer():
@@ -139,9 +153,13 @@ async def main():
               "and past sensor bring-up? Streaming anyway; watch 'kB read'.",
               flush=True)
 
+    frame_q = collections.deque(maxlen=512)
+    threading.Thread(target=rtt_reader_thread, args=(jlink, frame_q),
+                     daemon=True).start()
+
     async with websockets.serve(handler, "localhost", args.port):
         print(f"[bridge] serving ws://localhost:{args.port}", flush=True)
-        await asyncio.gather(rtt_reader(jlink), stats_printer())
+        await asyncio.gather(frame_broadcaster(frame_q), stats_printer())
 
 
 if __name__ == "__main__":

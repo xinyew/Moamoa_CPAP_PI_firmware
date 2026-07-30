@@ -33,6 +33,7 @@ int main(void)
     printk("Bus diag: mask %s, %d/14 sensors, SD %s\n",
            mask_present == 1 ? "attached" : "NOT ATTACHED",
            found, sd_ok == 0 ? "OK" : "absent/fail");
+    g_sensor_data.sd_ok = (sd_ok == 0);
 
     /* BLE: advertising only for now (data protocol redesign for the
      * 4-site topology pending — see comm_manager.c)
