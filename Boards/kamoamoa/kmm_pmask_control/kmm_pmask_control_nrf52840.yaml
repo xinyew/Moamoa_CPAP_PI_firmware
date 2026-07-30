@@ -1,0 +1,15 @@
+identifier: kmm_pmask_control/nrf52840
+name: KMM-PMask-Control
+type: mcu
+arch: arm
+toolchain:
+  - gnuarmemb
+  - zephyr
+sysbuild: true
+ram: 256
+flash: 1024
+supported:
+  - gpio
+  - i2c
+  - spi
+  - adc

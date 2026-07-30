@@ -1,0 +1,11 @@
+# Project-local binding for the TE MS5611-01BA03 pressure sensor in
+# I2C mode (PS = high; address 0x76/0x77 selected by CSB).
+#
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+    TE Connectivity MS5611 digital pressure and temperature sensor (I2C).
+
+compatible: "meas,ms5611-i2c"
+
+include: [sensor-device.yaml, i2c-device.yaml]

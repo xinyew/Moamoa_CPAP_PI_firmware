@@ -3,7 +3,7 @@
 
 #include <zephyr/kernel.h>
 
-#define PPG_COUNT  3
+#define PPG_COUNT  4
 
 struct ppg_sample {
     uint32_t red;
@@ -13,12 +13,10 @@ struct ppg_sample {
 };
 
 /**
- * @brief Check which MAX30101 instances came up (in-tree driver).
+ * @brief Check which MAX30101 instances came up (in-tree driver, one
+ *        per mask mux channel).
  *
- * The driver configures each present sensor at boot: multi-LED
- * R/IR/G slots, 100 Hz, 411 us pulse width (from devicetree).
- *
- * @return Number of ready sensors (0-3).
+ * @return Number of ready sensors (0-4).
  */
 int ppg_reader_init(void);
 

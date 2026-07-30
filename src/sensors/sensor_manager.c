@@ -1,16 +1,19 @@
 /*
- * Sensor manager — one sampling thread driving every sensor at the
- * budgeted rate (see README "Sampling-Rate Budget"):
+ * Sensor manager — one sampling thread driving the kmm-pmask sensor
+ * set at the budgeted rates:
  *
- *   tick = 10 ms (100 Hz)
- *   - PPG: fetch one sample per ready MAX30101 every tick (100 Hz)
- *   - FSR: all four SAADC channels every tick (100 Hz)
- *   - MS5611: conversions started on ticks 0 mod 4, read on the next
- *     tick (>= 5 ms later) -> 25 Hz pressure across all six
- *     concurrently; one cycle per second runs D2 (temperature) instead
- *   - SHT40: one blocking measurement per second
+ *   tick = 10 ms (100 Hz), absolute-deadline scheduled
+ *   - PPG: one FIFO sample per ready MAX30101 every tick (100 Hz x4)
+ *   - MS5611 x4 (I2C): read previous conversion + start next every
+ *     tick (OSR 2048, 4.6 ms < 10 ms) -> 100 Hz pressure; one cycle
+ *     per second converts temperature instead
+ *   - SHT40 x3: one sensor per second-third (each 1 Hz, blocking
+ *     ~8.3 ms in its tick — the absolute scheduler absorbs it)
+ *   - TMP117 x3 + battery + presence: 1 Hz
  *
- * A one-line summary with measured rates prints every second.
+ * BLE/RTT streaming is disabled pending the protocol redesign for the
+ * 4-site topology (see comm_manager.c) — RTT prints are the bring-up
+ * interface.
  */
 
 #include "sensor_manager.h"
@@ -18,36 +21,29 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/gpio.h>
 #include <string.h>
 
 #include "ppg_reader.h"
 #include "sht40_reader.h"
-#include "../drivers/driver_fsr.h"
+#include "tmp117_reader.h"
+#include "../drivers/driver_batt.h"
 #include "../drivers/driver_ms5611.h"
-#include "../comm/comm_manager.h"
 
 LOG_MODULE_REGISTER(sensor_mgr, LOG_LEVEL_INF);
 
 #define TICK_MS            10
 #define TICKS_PER_SECOND   (1000 / TICK_MS)
 
-/* FSR TIA: R_fsr = R_fb * VREF / (V_out - VREF), R_fb = 100k */
-#define FSR_RFB_OHM        100000
-
 struct system_sensor_data g_sensor_data;
 
 static K_THREAD_STACK_DEFINE(sensor_stack, 4096);
 static struct k_thread sensor_thread;
 
-static int32_t fsr_resistance(int32_t vout_mv, int32_t vref_mv)
-{
-    int32_t delta = vout_mv - vref_mv;
-
-    if (delta < 2) {
-        return -1;  /* open sensor / at or below reference */
-    }
-    return (int32_t)(((int64_t)FSR_RFB_OHM * vref_mv) / delta);
-}
+static const struct gpio_dt_spec presen_a =
+    GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), presen_a_gpios);
+static const struct gpio_dt_spec presen_b =
+    GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), presen_b_gpios);
 
 static void print_summary(uint32_t seconds)
 {
@@ -64,35 +60,37 @@ static void print_summary(uint32_t seconds)
     }
     printk(" @%uHz\n", d->ppg_rate);
 
-    printk("        FSR %d/%d/%d mV Vref %d mV R", d->ff_mv[0], d->ff_mv[1],
-           d->ff_mv[2], d->vref_mv);
-    for (int i = 0; i < 3; i++) {
-        if (d->rfsr_ohm[i] < 0) {
-            printk(" --");
-        } else {
-            printk(" %d", d->rfsr_ohm[i]);
-        }
-    }
-    printk(" ohm @%uHz\n", d->fsr_rate);
-
     printk("        P(Pa)");
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < MS5611_COUNT; i++) {
         if (d->baro_ok_mask & BIT(i)) {
             printk(" %d", d->baro_pa[i]);
         } else {
             printk(" --");
         }
     }
-    printk(" @%uHz", d->baro_rate);
-
-    if (d->sht_ok) {
-        printk(" | SHT %d.%02uC %u.%02u%%RH\n",
-               d->sht_temp_c100 / 100,
-               (unsigned)(d->sht_temp_c100 < 0 ? -d->sht_temp_c100 : d->sht_temp_c100) % 100,
-               (unsigned)d->sht_rh_x100 / 100, (unsigned)d->sht_rh_x100 % 100);
-    } else {
-        printk(" | SHT --\n");
+    printk(" @%uHz | SHT", d->baro_rate);
+    for (int i = 0; i < SHT_COUNT; i++) {
+        if (d->sht_mask & BIT(i)) {
+            printk(" %d:%d.%02uC/%u.%01u%%", i + 1,
+                   d->sht_temp_c100_n[i] / 100,
+                   (unsigned)(d->sht_temp_c100_n[i] % 100),
+                   (unsigned)d->sht_rh_x100_n[i] / 100,
+                   ((unsigned)d->sht_rh_x100_n[i] % 100) / 10);
+        } else {
+            printk(" %d:--", i + 1);
+        }
     }
+    printk("\n        TMP");
+    for (int i = 0; i < TMP_COUNT; i++) {
+        if (d->tmp_mask & BIT(i)) {
+            printk(" %d:%d.%02uC", i + 1, d->tmp_c100_n[i] / 100,
+                   (unsigned)(d->tmp_c100_n[i] % 100));
+        } else {
+            printk(" %d:--", i + 1);
+        }
+    }
+    printk(" | VBAT %d mV | mask %s\n", d->vbat_mv,
+           d->mask_present ? "OK" : "ABSENT");
 }
 
 static void sensor_thread_fn(void *a, void *b, void *c)
@@ -104,49 +102,32 @@ static void sensor_thread_fn(void *a, void *b, void *c)
     struct system_sensor_data *d = &g_sensor_data;
 
     ppg_reader_init();
-    d->sht_ok = (sht40_reader_init() == 0);
+    d->sht_mask = sht40_reader_init();
+    d->tmp_mask = tmp117_reader_init();
     drv_ms5611_init();
     d->baro_ok_mask = drv_ms5611_ok_mask();
-    if (drv_fsr_init() < 0) {
-        LOG_ERR("FSR ADC init failed");
+    if (drv_batt_init() < 0) {
+        LOG_ERR("battery ADC init failed");
     }
 
     uint32_t tick = 0;
     uint32_t seconds = 0;
-    uint32_t ppg_cnt = 0, fsr_cnt = 0, baro_cnt = 0;
+    uint32_t ppg_cnt = 0, baro_cnt = 0;
     bool baro_pending = false;
     int64_t next_wake = k_uptime_get();
 
     while (1) {
-        struct tick_sample ts = {0};
-
-        /* PPG + FSR every tick (100 Hz) */
+        /* PPG every tick (100 Hz x4) */
         if (ppg_reader_read(d->ppg) > 0) {
             ppg_cnt++;
         }
-        memcpy(ts.ppg, d->ppg, sizeof(ts.ppg));
 
-        struct fsr_data fsr;
-
-        if (drv_fsr_read(&fsr) == 0) {
-            for (int i = 0; i < 3; i++) {
-                d->ff_mv[i] = fsr.ff_mv[i];
-                d->rfsr_ohm[i] = fsr_resistance(fsr.ff_mv[i], fsr.vref_mv);
-                ts.ff_mv[i] = (int16_t)fsr.ff_mv[i];
-            }
-            d->vref_mv = fsr.vref_mv;
-            ts.vref_mv = (int16_t)fsr.vref_mv;
-            fsr_cnt++;
-        }
-
-        /* MS5611 at 100 Hz: every tick, read the conversion started on
-         * the previous tick (10 ms > 4.6 ms at OSR 2048) and start the
-         * next one. One cycle per second converts temperature instead;
-         * that tick reuses the previous pressure values.
+        /* MS5611 at 100 Hz: read previous conversion, start next.
+         * One cycle per second converts temperature instead.
          */
         if (d->baro_ok_mask != 0) {
             if (baro_pending && drv_ms5611_finish_conv() == 0) {
-                for (int i = 0; i < 6; i++) {
+                for (int i = 0; i < MS5611_COUNT; i++) {
                     drv_ms5611_get(i, &d->baro_pa[i], &d->baro_temp_c100[i]);
                 }
                 baro_cnt++;
@@ -156,31 +137,42 @@ static void sensor_thread_fn(void *a, void *b, void *c)
 
             baro_pending = (drv_ms5611_start_conv(temp_cycle) == 0);
         }
-        memcpy(ts.baro_pa, d->baro_pa, sizeof(ts.baro_pa));
 
-        /* Batch this tick into the BLE/RTT stream */
-        comm_manager_push_tick(&ts);
+        /* SHT40: one sensor per second-third (each at 1 Hz) */
+        uint32_t phase = tick % TICKS_PER_SECOND;
 
-        /* SHT40 once per second (blocking ~8.3 ms) */
-        if (d->sht_ok && (tick % TICKS_PER_SECOND) == 50) {
-            sht40_reader_read(&d->sht_temp_c100, &d->sht_rh_x100);
+        if (phase == 20 || phase == 53 || phase == 86) {
+            int idx = (phase == 20) ? 0 : (phase == 53) ? 1 : 2;
+
+            if (d->sht_mask & BIT(idx)) {
+                sht40_reader_read(idx, &d->sht_temp_c100_n[idx],
+                                  &d->sht_rh_x100_n[idx]);
+            }
+        }
+
+        /* TMP117 + battery + presence at 1 Hz */
+        if (phase == 70) {
+            for (int i = 0; i < TMP_COUNT; i++) {
+                if (d->tmp_mask & BIT(i)) {
+                    tmp117_reader_read(i, &d->tmp_c100_n[i]);
+                }
+            }
+            drv_batt_read(&d->vbat_mv);
+            d->mask_present = (gpio_pin_get_dt(&presen_a) == 1) &&
+                              (gpio_pin_get_dt(&presen_b) == 1);
         }
 
         tick++;
         if ((tick % TICKS_PER_SECOND) == 0) {
             seconds++;
             d->ppg_rate = ppg_cnt;
-            d->fsr_rate = fsr_cnt;
             d->baro_rate = baro_cnt;
-            ppg_cnt = fsr_cnt = baro_cnt = 0;
+            ppg_cnt = baro_cnt = 0;
             print_summary(seconds);
-            comm_manager_push_status();
         }
 
-        /* Absolute-deadline scheduling: the tick period stays 10 ms
-         * regardless of how long the bus work took (k_msleep after
-         * ~4 ms of work would stretch the tick to ~14 ms). If a tick
-         * overruns (e.g. the 8.3 ms SHT40 read), skip ahead.
+        /* Absolute-deadline scheduling: 10 ms period regardless of
+         * work time; overruns (e.g. the 8.3 ms SHT read) skip ahead.
          */
         next_wake += TICK_MS;
         if (next_wake <= k_uptime_get()) {

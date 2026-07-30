@@ -1,7 +1,7 @@
 /*
- * SHT40 temp/humidity reader — thin wrapper over the in-tree sht4x
- * driver (TCA9548A channel 3, high repeatability). Polled at 1 Hz;
- * higher duty would self-heat the sensor.
+ * SHT40 temp/humidity readers — in-tree sht4x driver, three sensors
+ * (mask sites on mux ch0/ch2/ch3). Staggered at 1 Hz each by the
+ * sensor manager; higher duty would self-heat.
  */
 
 #include "sht40_reader.h"
@@ -11,26 +11,35 @@
 
 LOG_MODULE_REGISTER(sht40_reader, LOG_LEVEL_INF);
 
-static const struct device *const sht_dev = DEVICE_DT_GET(DT_NODELABEL(sht40));
+static const struct device *const sht_dev[SHT_COUNT] = {
+    DEVICE_DT_GET(DT_NODELABEL(sht1)),
+    DEVICE_DT_GET(DT_NODELABEL(sht2)),
+    DEVICE_DT_GET(DT_NODELABEL(sht3)),
+};
 
-int sht40_reader_init(void)
+uint8_t sht40_reader_init(void)
 {
-    if (!device_is_ready(sht_dev)) {
-        LOG_WRN("SHT40 absent");
-        return -ENODEV;
+    uint8_t mask = 0;
+
+    for (int i = 0; i < SHT_COUNT; i++) {
+        if (device_is_ready(sht_dev[i])) {
+            mask |= BIT(i);
+        } else {
+            LOG_WRN("sht%d absent", i + 1);
+        }
     }
 
-    LOG_INF("SHT40 online (1 Hz, high repeatability)");
-    return 0;
+    LOG_INF("SHT40: mask 0x%X online (1 Hz each, staggered)", mask);
+    return mask;
 }
 
-int sht40_reader_read(int32_t *temp_c100, int32_t *rh_x100)
+int sht40_reader_read(int idx, int32_t *temp_c100, int32_t *rh_x100)
 {
-    if (!device_is_ready(sht_dev)) {
+    if (idx < 0 || idx >= SHT_COUNT || !device_is_ready(sht_dev[idx])) {
         return -ENODEV;
     }
 
-    int ret = sensor_sample_fetch(sht_dev);
+    int ret = sensor_sample_fetch(sht_dev[idx]);
 
     if (ret < 0) {
         return ret;
@@ -38,11 +47,11 @@ int sht40_reader_read(int32_t *temp_c100, int32_t *rh_x100)
 
     struct sensor_value t, rh;
 
-    ret = sensor_channel_get(sht_dev, SENSOR_CHAN_AMBIENT_TEMP, &t);
+    ret = sensor_channel_get(sht_dev[idx], SENSOR_CHAN_AMBIENT_TEMP, &t);
     if (ret < 0) {
         return ret;
     }
-    ret = sensor_channel_get(sht_dev, SENSOR_CHAN_HUMIDITY, &rh);
+    ret = sensor_channel_get(sht_dev[idx], SENSOR_CHAN_HUMIDITY, &rh);
     if (ret < 0) {
         return ret;
     }

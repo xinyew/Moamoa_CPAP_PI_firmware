@@ -1,10 +1,8 @@
 /*
  * MAX30101 PPG reader — thin wrapper over the in-tree Zephyr driver.
- *
- * Three instances live behind TCA9548A channels 0-2 (devicetree);
- * the mux driver switches channels transparently per transaction.
- * Sensors that failed probe at boot (e.g. ppg1 with its broken FPC
- * pins) are skipped and rejoin after a fix + reboot.
+ * Four instances, one per TCA9546A channel (mask sites); the mux
+ * driver switches channels transparently per transaction. Sensors
+ * that failed probe at boot are skipped and rejoin after fix+reboot.
  */
 
 #include "ppg_reader.h"
@@ -18,6 +16,7 @@ static const struct device *const ppg_dev[PPG_COUNT] = {
     DEVICE_DT_GET(DT_NODELABEL(ppg1)),
     DEVICE_DT_GET(DT_NODELABEL(ppg2)),
     DEVICE_DT_GET(DT_NODELABEL(ppg3)),
+    DEVICE_DT_GET(DT_NODELABEL(ppg4)),
 };
 
 int ppg_reader_init(void)
@@ -32,7 +31,7 @@ int ppg_reader_init(void)
         }
     }
 
-    LOG_INF("PPG: %d/3 online (100 Hz, R/IR/G)", ready);
+    LOG_INF("PPG: %d/%d online (100 Hz, R/IR/G)", ready, PPG_COUNT);
     return ready;
 }
 

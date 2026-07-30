@@ -239,6 +239,16 @@ static void ble_send_json_line(void)
 
 void comm_manager_push_tick(const struct tick_sample *tick)
 {
+    /* kmm-pmask bring-up: streaming disabled — the frame format still
+     * describes the 3-PPG/6-baro topology and must be redesigned for
+     * the 4-site mask (4x PPG, 4x baro, 3x SHT40, 3x TMP117) before
+     * re-enabling. RTT console is the bring-up interface.
+     */
+    if (IS_ENABLED(CONFIG_BOARD_KMM_PMASK_CONTROL)) {
+        ARG_UNUSED(tick);
+        return;
+    }
+
     acc[acc_n++] = *tick;
     if (acc_n < COMM_TICKS_PER_FRAME) {
         return;
@@ -263,6 +273,10 @@ void comm_manager_push_tick(const struct tick_sample *tick)
 
 void comm_manager_push_status(void)
 {
+    if (IS_ENABLED(CONFIG_BOARD_KMM_PMASK_CONTROL)) {
+        return;  /* see comm_manager_push_tick() */
+    }
+
     build_status_frame();
     rtt_stream_write(status_frame_buf, COMM_STATUS_FRAME_LEN);
 

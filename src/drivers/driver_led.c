@@ -1,5 +1,5 @@
 /*
- * Status LED driver — LED1 (P1.08) and LED2 (P1.09), active low.
+ * Debug LED driver — four active-low LEDs (P0.19, P0.21, P0.20, P0.22).
  */
 
 #include "driver_led.h"
@@ -12,6 +12,8 @@ LOG_MODULE_REGISTER(led, LOG_LEVEL_INF);
 static const struct gpio_dt_spec leds[] = {
     GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios),
     GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios),
+    GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios),
+    GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios),
 };
 
 int drv_led_init(void)

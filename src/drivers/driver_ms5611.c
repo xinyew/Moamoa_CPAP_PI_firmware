@@ -1,28 +1,23 @@
 /*
- * MS5611-01BA03 barometric pressure sensor driver (SPI, six instances).
+ * MS5611-01BA03 barometric pressure sensor driver — I2C mode, four
+ * instances behind the mask's TCA9546A mux (PS = 3.3 V, CSB = GND ->
+ * address 0x77; the mux driver switches channels per transaction).
  *
- * Protocol shared with the MS5607, but with the MS5611 compensation
- * exponents (datasheet "PRESSURE AND TEMPERATURE CALCULATION"):
+ * MS5611 compensation (datasheet "PRESSURE AND TEMPERATURE
+ * CALCULATION"), including second order below 20 degC:
  *   dT   = D2 - C5*2^8
  *   TEMP = 2000 + dT*C6 / 2^23                     [0.01 degC]
  *   OFF  = C2*2^16 + C4*dT / 2^7
  *   SENS = C1*2^15 + C3*dT / 2^8
  *   P    = (D1*SENS/2^21 - OFF) / 2^15             [0.01 mbar = 1 Pa]
- * plus second-order compensation below 20 degC.
- *
- * All six sensors share the bus; conversions are started on all of
- * them back-to-back and read after one conversion delay, so the six
- * convert concurrently (this is what makes 25-50 Hz x6 cheap).
  */
 
 #include "driver_ms5611.h"
 
-#include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(ms5611, LOG_LEVEL_INF);
-
-#define MS5611_SPI_OP  (SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
 
 #define CMD_RESET       0x1E
 #define CMD_CONV_D1     0x46  /* pressure, OSR 2048 */
@@ -33,52 +28,36 @@ LOG_MODULE_REGISTER(ms5611, LOG_LEVEL_INF);
 #define CONV_TIME_MS    5     /* OSR 2048 max 4.6 ms */
 
 struct ms5611 {
-    struct spi_dt_spec spi;
-    uint16_t c[8];        /* calibration PROM */
-    int32_t dT;           /* from last D2, used to compensate D1 */
+    struct i2c_dt_spec i2c;
+    uint16_t c[8];
+    int32_t dT;
     int32_t temp_c100;
     int32_t press_pa;
     bool ok;
 };
 
 static struct ms5611 sensors[MS5611_COUNT] = {
-    { .spi = SPI_DT_SPEC_GET(DT_NODELABEL(baro1), MS5611_SPI_OP) },
-    { .spi = SPI_DT_SPEC_GET(DT_NODELABEL(baro2), MS5611_SPI_OP) },
-    { .spi = SPI_DT_SPEC_GET(DT_NODELABEL(baro3), MS5611_SPI_OP) },
-    { .spi = SPI_DT_SPEC_GET(DT_NODELABEL(baro4), MS5611_SPI_OP) },
-    { .spi = SPI_DT_SPEC_GET(DT_NODELABEL(baro5), MS5611_SPI_OP) },
-    { .spi = SPI_DT_SPEC_GET(DT_NODELABEL(baro6), MS5611_SPI_OP) },
+    { .i2c = I2C_DT_SPEC_GET(DT_NODELABEL(baro1)) },
+    { .i2c = I2C_DT_SPEC_GET(DT_NODELABEL(baro2)) },
+    { .i2c = I2C_DT_SPEC_GET(DT_NODELABEL(baro3)) },
+    { .i2c = I2C_DT_SPEC_GET(DT_NODELABEL(baro4)) },
 };
 
 static bool conv_is_temp;
 
 /* -------------------------------------------------------------------------- */
-/*  SPI helpers                                                               */
+/*  Bus helpers                                                               */
 /* -------------------------------------------------------------------------- */
 
 static int ms5611_cmd(struct ms5611 *s, uint8_t cmd)
 {
-    const struct spi_buf tx_buf = { .buf = &cmd, .len = 1 };
-    const struct spi_buf_set tx = { .buffers = &tx_buf, .count = 1 };
-
-    return spi_write_dt(&s->spi, &tx);
+    return i2c_write_dt(&s->i2c, &cmd, 1);
 }
 
 static int ms5611_read_bytes(struct ms5611 *s, uint8_t cmd, uint8_t *data,
                              size_t len)
 {
-    uint8_t tx_data[4] = { cmd };
-    uint8_t rx_data[4];
-    const struct spi_buf tx_buf = { .buf = tx_data, .len = len + 1 };
-    const struct spi_buf rx_buf = { .buf = rx_data, .len = len + 1 };
-    const struct spi_buf_set tx = { .buffers = &tx_buf, .count = 1 };
-    const struct spi_buf_set rx = { .buffers = &rx_buf, .count = 1 };
-
-    int ret = spi_transceive_dt(&s->spi, &tx, &rx);
-    if (ret == 0) {
-        memcpy(data, &rx_data[1], len);
-    }
-    return ret;
+    return i2c_write_read_dt(&s->i2c, &cmd, 1, data, len);
 }
 
 static int ms5611_read_adc(struct ms5611 *s, uint32_t *val)
@@ -112,7 +91,7 @@ static uint8_t ms5611_crc4(uint16_t prom[8])
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Compensation (MS5611 exponents, incl. second order)                       */
+/*  Compensation                                                              */
 /* -------------------------------------------------------------------------- */
 
 static void ms5611_update_temp(struct ms5611 *s, uint32_t d2)
@@ -159,10 +138,11 @@ int drv_ms5611_init(void)
         struct ms5611 *s = &sensors[i];
 
         s->ok = false;
-        if (!spi_is_ready_dt(&s->spi)) {
+        if (!device_is_ready(s->i2c.bus)) {
             continue;
         }
         if (ms5611_cmd(s, CMD_RESET) < 0) {
+            LOG_WRN("baro%d: no ACK at 0x%02X", i + 1, s->i2c.addr);
             continue;
         }
         k_msleep(3);
@@ -180,22 +160,22 @@ int drv_ms5611_init(void)
         }
         if (ret < 0 || all0 || all1 ||
             ms5611_crc4(s->c) != (s->c[7] & 0xF)) {
-            LOG_WRN("baro%d absent or bad PROM", i + 1);
+            LOG_WRN("baro%d: bad/absent PROM", i + 1);
             continue;
         }
 
         s->ok = true;
         good++;
+        LOG_INF("baro%d: PROM CRC OK (C1=%u C5=%u)", i + 1, s->c[1], s->c[5]);
     }
 
-    /* Seed dT with one blocking temperature conversion */
     if (good > 0) {
         drv_ms5611_start_conv(true);
         k_msleep(CONV_TIME_MS + 1);
         drv_ms5611_finish_conv();
     }
 
-    LOG_INF("MS5611: %d/6 online", good);
+    LOG_INF("MS5611: %d/%d online", good, MS5611_COUNT);
     return good;
 }
 
@@ -248,7 +228,7 @@ int drv_ms5611_finish_conv(void)
             continue;
         }
         if (adc == 0) {
-            continue;  /* conversion not ready — keep previous value */
+            continue;  /* not ready — keep previous value */
         }
         if (conv_is_temp) {
             ms5611_update_temp(&sensors[i], adc);

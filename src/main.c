@@ -1,6 +1,6 @@
 /*
- * CPAP PI Sensor Control — PPG + FSR + Pressure Sensing Firmware
- * Custom nRF52840 board (cpap_pi_control/nrf52840, Raytac MDBT50Q-P1M)
+ * KMM PMask Control — PPG + Pressure + Temp/Humidity Sensing Firmware
+ * Custom nRF52840 board (kmm_pmask_control/nrf52840, Raytac MDBT50Q-P1MV2)
  */
 
 #include <zephyr/kernel.h>
@@ -12,32 +12,40 @@
 #include "sensors/sensor_manager.h"
 #include "comm/comm_manager.h"
 
-LOG_MODULE_REGISTER(cpap_pi_main, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(kmm_pmask_main, LOG_LEVEL_DBG);
 
 int main(void)
 {
-    printk("\n=== CPAP PI Sensor Control Boot ===\n");
+    printk("\n=== KMM PMask Control Boot ===\n");
 
-    /* Status LEDs (LED1 = P1.08, LED2 = P1.09, active low) */
+    /* Debug LEDs (P0.19/21/20/22, active low) */
     if (drv_led_init() < 0) {
         LOG_ERR("Failed to init LEDs");
     }
 
-    /* Bring-up diagnostics: TCA9548A channels and MS5611 PROM CRCs */
-    int i2c_ok = bus_diag_scan_mux();
-    int baro_ok = bus_diag_ms5611_check();
-    printk("Bus diag: %d/4 I2C sensors, %d/6 baros OK\n", i2c_ok, baro_ok);
+    /* Mask bus: PCA9517A repeater ON + presence pins, then scan the
+     * TCA9546A channels for the four sensor clusters, then the SD card.
+     */
+    int mask_present = bus_diag_prepare_mask_bus();
+    int found = bus_diag_scan_mux();
+    int sd_ok = bus_diag_sd_check();
 
-    /* BLE NUS transport + binary frame stream for the web portal */
+    printk("Bus diag: mask %s, %d/14 sensors, SD %s\n",
+           mask_present == 1 ? "attached" : "NOT ATTACHED",
+           found, sd_ok == 0 ? "OK" : "absent/fail");
+
+    /* BLE: advertising only for now (data protocol redesign for the
+     * 4-site topology pending — see comm_manager.c)
+     */
     if (comm_manager_init() < 0) {
         LOG_ERR("Failed to init comm layer");
     }
 
-    /* Sampling thread: PPG + FSR 100 Hz, baro 25 Hz, SHT40 1 Hz */
+    /* Sampling thread: PPG x4 + baro x4 @100 Hz, SHT/TMP/batt @1 Hz */
     sensor_manager_start();
 
     while (1) {
-        drv_led_toggle(LED_1);  /* heartbeat */
+        drv_led_toggle(LED_1);  /* heartbeat on DEBUG_LED0 */
         k_msleep(500);
     }
 }

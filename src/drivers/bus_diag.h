@@ -4,23 +4,28 @@
 #include <zephyr/kernel.h>
 
 /**
- * @brief Scan all four TCA9548A downstream channels.
+ * @brief Enable the PCA9517A I2C repeater and read mask presence.
  *
- * Probes every 7-bit address on each mux channel bus and prints what
- * ACKs. Expected: 0x57 (MAX30101) on ch0-ch2, 0x44 (SHT40) on ch3.
+ * Must run before any I2C traffic to the mask.
  *
- * @return Number of expected devices found (0-4).
+ * @return 1 if the mask is attached (both PRESEN pins grounded),
+ *         0 if not/partial, negative errno on GPIO failure.
+ */
+int bus_diag_prepare_mask_bus(void);
+
+/**
+ * @brief Scan all four TCA9546A channels for the expected sensor
+ *        clusters and check every MAX30101 PART_ID.
+ *
+ * @return Number of expected devices found (0-14).
  */
 int bus_diag_scan_mux(void);
 
 /**
- * @brief Reset all six MS5611 barometers and validate their PROM CRCs.
+ * @brief Probe the microSD card via the disk subsystem.
  *
- * Sends the reset command, reads the 8-word calibration PROM per sensor
- * and checks the CRC-4 (datasheet AN520 algorithm).
- *
- * @return Number of sensors with a valid PROM CRC (0-6).
+ * @return 0 if a card responds, negative errno otherwise.
  */
-int bus_diag_ms5611_check(void);
+int bus_diag_sd_check(void);
 
 #endif /* BUS_DIAG_H */
