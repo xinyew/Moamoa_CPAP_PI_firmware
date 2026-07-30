@@ -33,6 +33,8 @@ static const struct bt_data sd[] = {
 };
 
 static ble_rx_cb_t rx_callback;
+static ble_tx_sent_cb_t sent_callback;
+static ble_tx_ready_cb_t ready_callback;
 static atomic_t connected_flag;
 static atomic_t notif_enabled;
 
@@ -50,15 +52,29 @@ static void on_nus_received(struct bt_conn *conn, const uint8_t *const data,
     }
 }
 
+static void on_nus_sent(struct bt_conn *conn)
+{
+    ARG_UNUSED(conn);
+
+    if (sent_callback != NULL) {
+        sent_callback();
+    }
+}
+
 static void on_nus_send_enabled(enum bt_nus_send_status status)
 {
-    atomic_set(&notif_enabled, status == BT_NUS_SEND_STATUS_ENABLED);
-    LOG_INF("NUS notifications %s",
-            status == BT_NUS_SEND_STATUS_ENABLED ? "enabled" : "disabled");
+    bool enabled = (status == BT_NUS_SEND_STATUS_ENABLED);
+
+    atomic_set(&notif_enabled, enabled);
+    LOG_INF("NUS notifications %s", enabled ? "enabled" : "disabled");
+    if (ready_callback != NULL) {
+        ready_callback(enabled);
+    }
 }
 
 static struct bt_nus_cb nus_callbacks = {
     .received = on_nus_received,
+    .sent = on_nus_sent,
     .send_enabled = on_nus_send_enabled,
 };
 
@@ -122,6 +138,9 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     atomic_set(&connected_flag, 0);
     atomic_set(&notif_enabled, 0);
     drv_led_set(LED_2, false);
+    if (ready_callback != NULL) {
+        ready_callback(false);
+    }
 
     /* Defer re-advertise — must not run in the stack's own context */
     k_work_schedule(&adv_restart_work, K_MSEC(50));
@@ -136,11 +155,14 @@ static struct bt_conn_cb conn_callbacks = {
 /*  Public API                                                                */
 /* -------------------------------------------------------------------------- */
 
-int ble_manager_init(ble_rx_cb_t rx_cb)
+int ble_manager_init(ble_rx_cb_t rx_cb, ble_tx_sent_cb_t sent_cb,
+                     ble_tx_ready_cb_t ready_cb)
 {
     int ret;
 
     rx_callback = rx_cb;
+    sent_callback = sent_cb;
+    ready_callback = ready_cb;
 
     ret = bt_enable(NULL);
     if (ret) {

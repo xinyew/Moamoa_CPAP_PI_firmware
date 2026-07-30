@@ -40,7 +40,9 @@
  *    40  u8   baro_ok_mask
  *    41  u8   sht_mask
  *    42  u8   tmp_mask
- *    43  total
+ *    43  u8   ble_drops_last_sec (frames shed, saturating)
+ *    44  u8   ble_decim (current AIMD pacing: send every Nth frame)
+ *    45  total
  *
  * NUS RX commands (single ASCII byte):
  *   'B' — binary streaming (default)
@@ -53,7 +55,7 @@
 
 #define COMM_TICKS_PER_FRAME  4
 #define COMM_DATA_FRAME_LEN   204
-#define COMM_STATUS_FRAME_LEN 43
+#define COMM_STATUS_FRAME_LEN 45
 
 #define COMM_CMD_BINARY     'B'
 #define COMM_CMD_JSON       'J'

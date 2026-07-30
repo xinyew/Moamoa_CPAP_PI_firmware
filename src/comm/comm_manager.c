@@ -2,12 +2,24 @@
  * Comm manager — batches sensor ticks into binary v2 DATA frames
  * (40 ms, see comm_protocol.h) and a 1 Hz STATUS frame, fanned out to:
  *
- *   - RTT up-buffer 1 (wired, always on, lossless with a probe reading)
- *   - BLE NUS (when connected; sent from the system workqueue so the
- *     sensor thread never blocks on radio; dropped if in flight)
+ *   - RTT up-buffer 1 (wired; decimated to fit the EDU Mini probe's
+ *     ~2.3 kB/s drain ceiling)
+ *   - BLE NUS via a dedicated credit-paced TX thread:
+ *       sensor thread -> drop-OLDEST frame queue (depth 8) -> TX
+ *       thread -> <=2 notifications in flight (credits returned by
+ *       the NUS sent callback). Nothing in the sensor path or the
+ *       system workqueue can ever block on the radio, and a stalled
+ *       link degrades by shedding the oldest data with bounded
+ *       latency instead of freezing.
  *
- * NUS RX command byte: 'B' binary (default) / 'J' JSON debug — JSON
- * mode replaces the BLE stream with a 1 Hz line; RTT stays binary.
+ * AIMD link pacing (per second, in push_status): sustained queue
+ * drops halve the BLE frame rate (up to 8x); after enough drop-free
+ * seconds the rate probes back up, with escalating patience when
+ * probes keep failing (no sawtooth on persistently weak links).
+ * Current decimation and drops/s ride in the STATUS frame so the
+ * portal shows link health live.
+ *
+ * NUS RX command byte: 'B' binary (default) / 'J' JSON debug.
  */
 
 #include "comm_manager.h"
@@ -39,17 +51,35 @@ static uint8_t seq;
 static struct tick_sample acc[COMM_TICKS_PER_FRAME];
 static int acc_n;
 
-/* Frames are built in the sensor thread (also fed to RTT), then
- * snapshotted into per-transport buffers for the BLE workqueue.
- */
+/* Frames built in the sensor thread; RTT written inline (cheap memcpy) */
 static uint8_t frame_buf[COMM_DATA_FRAME_LEN];
 static uint8_t status_frame_buf[COMM_STATUS_FRAME_LEN];
-static uint8_t ble_data_buf[COMM_DATA_FRAME_LEN];
-static uint8_t ble_status_buf[160];
-static uint16_t ble_status_len;
-static atomic_t data_busy;
-static atomic_t status_busy;
-static uint32_t dropped_frames;
+
+/* --- BLE TX path: drop-oldest queue + credit-paced sender thread --- */
+
+#define TX_QUEUE_DEPTH   8
+#define TX_CREDITS       2    /* notifications in flight */
+
+struct tx_msg {
+    uint16_t len;
+    uint8_t buf[COMM_DATA_FRAME_LEN];
+};
+
+K_MSGQ_DEFINE(tx_msgq, sizeof(struct tx_msg), TX_QUEUE_DEPTH, 4);
+static K_SEM_DEFINE(tx_credits, TX_CREDITS, TX_CREDITS);
+
+static uint32_t ble_drops;         /* frames shed (queue full / timeout) */
+static uint32_t adapt_last_dropped;
+static uint8_t ble_decim = 1;      /* send every Nth built frame, 1..8 */
+static uint8_t ble_skip;
+static uint8_t adapt_calm;
+static uint8_t adapt_calm_need = 5;
+static int64_t adapt_last_probe;
+static uint8_t last_drops_sec;
+
+/* RTT wired decimation (probe bandwidth, fixed) */
+#define RTT_DECIM  3
+static uint8_t rtt_skip;
 
 /* -------------------------------------------------------------------------- */
 /*  Little-endian helpers                                                     */
@@ -77,31 +107,83 @@ static inline void put_u32(uint8_t *p, uint32_t v)
 }
 
 /* -------------------------------------------------------------------------- */
-/*  BLE send work                                                             */
+/*  BLE TX thread                                                             */
 /* -------------------------------------------------------------------------- */
 
-static void send_data_work_fn(struct k_work *work)
+static void enqueue_frame(const uint8_t *buf, uint16_t len)
 {
-    ARG_UNUSED(work);
+    struct tx_msg m;
 
-    if (ble_manager_send(ble_data_buf, COMM_DATA_FRAME_LEN) < 0) {
-        dropped_frames++;
+    m.len = len;
+    memcpy(m.buf, buf, len);
+
+    while (k_msgq_put(&tx_msgq, &m, K_NO_WAIT) != 0) {
+        struct tx_msg victim;
+
+        /* Queue full: shed the OLDEST frame — newest data keeps
+         * flowing and latency stays bounded.
+         */
+        if (k_msgq_get(&tx_msgq, &victim, K_NO_WAIT) == 0) {
+            ble_drops++;
+        } else {
+            return;
+        }
     }
-    atomic_set(&data_busy, 0);
 }
 
-static void send_status_work_fn(struct k_work *work)
+static void tx_thread_fn(void *a, void *b, void *c)
 {
-    ARG_UNUSED(work);
+    ARG_UNUSED(a);
+    ARG_UNUSED(b);
+    ARG_UNUSED(c);
 
-    if (ble_manager_send(ble_status_buf, ble_status_len) < 0) {
-        dropped_frames++;
+    struct tx_msg m;
+
+    while (1) {
+        k_msgq_get(&tx_msgq, &m, K_FOREVER);
+
+        if (!ble_manager_can_send()) {
+            continue;  /* link went away — discard */
+        }
+
+        /* Credit pacing: never more than TX_CREDITS notifications in
+         * flight; a credit that fails to return within 300 ms means
+         * the link stalled — shed this frame and move on.
+         */
+        if (k_sem_take(&tx_credits, K_MSEC(300)) != 0) {
+            ble_drops++;
+            continue;
+        }
+
+        if (ble_manager_send(m.buf, m.len) < 0) {
+            ble_drops++;
+            k_sem_give(&tx_credits);
+        }
     }
-    atomic_set(&status_busy, 0);
 }
 
-static K_WORK_DEFINE(send_data_work, send_data_work_fn);
-static K_WORK_DEFINE(send_status_work, send_status_work_fn);
+K_THREAD_DEFINE(comm_tx_thread, 2048, tx_thread_fn, NULL, NULL, NULL,
+                K_PRIO_PREEMPT(7), 0, 0);
+
+static void on_tx_sent(void)
+{
+    k_sem_give(&tx_credits);  /* capped at TX_CREDITS by the sem limit */
+}
+
+static void on_tx_ready(bool ready)
+{
+    if (!ready) {
+        k_msgq_purge(&tx_msgq);
+        /* Restore full credits — in-flight notifications died with
+         * the link and their sent callbacks may never come.
+         */
+        while (k_sem_take(&tx_credits, K_NO_WAIT) == 0) {
+        }
+        for (int i = 0; i < TX_CREDITS; i++) {
+            k_sem_give(&tx_credits);
+        }
+    }
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Frame builders (v2)                                                       */
@@ -185,16 +267,15 @@ static void build_status_frame(bool sd_ok)
     p[40] = d->baro_ok_mask;
     p[41] = d->sht_mask;
     p[42] = d->tmp_mask;
+    p[43] = last_drops_sec;
+    p[44] = ble_decim;
 }
 
 static void ble_send_json_line(void)
 {
-    if (atomic_cas(&status_busy, 0, 1) == false) {
-        return;
-    }
-
     struct system_sensor_data *d = &g_sensor_data;
     const struct ppg_sample *ppg = &d->ppg[0];
+    uint8_t json[160];
 
     for (int s = 0; s < PPG_COUNT; s++) {
         if (d->ppg[s].valid) {
@@ -203,7 +284,7 @@ static void ble_send_json_line(void)
         }
     }
 
-    int len = snprintf((char *)ble_status_buf, sizeof(ble_status_buf),
+    int len = snprintf((char *)json, sizeof(json),
                        "{\"r\":%u,\"i\":%u,\"g\":%u,\"p\":%d,"
                        "\"t\":%d.%02d,\"h\":%d.%02d,\"skin\":%d.%02d,"
                        "\"vbat\":%d}\n",
@@ -216,8 +297,44 @@ static void ble_send_json_line(void)
                        (int)(d->tmp_c100_n[0] % 100),
                        (int)d->vbat_mv);
 
-    ble_status_len = MIN((uint16_t)len, (uint16_t)sizeof(ble_status_buf));
-    k_work_submit(&send_status_work);
+    enqueue_frame(json, MIN((uint16_t)len, (uint16_t)sizeof(json)));
+}
+
+/* -------------------------------------------------------------------------- */
+/*  AIMD link pacing (called once per real second)                            */
+/* -------------------------------------------------------------------------- */
+
+static void adapt_pacing(void)
+{
+    uint32_t drops = ble_drops - adapt_last_dropped;
+
+    adapt_last_dropped = ble_drops;
+    last_drops_sec = (uint8_t)MIN(drops, 255U);
+
+    if (drops > 2) {
+        if (ble_decim < 8) {
+            /* A probe-up that immediately re-dropped: the link really
+             * is that slow — require longer calm before retrying.
+             */
+            if (k_uptime_get() - adapt_last_probe < 10000 &&
+                adapt_calm_need < 30) {
+                adapt_calm_need += 5;
+            }
+            ble_decim <<= 1;
+            LOG_WRN("link pacing: decim -> %u (%u drops/s)", ble_decim,
+                    drops);
+        }
+        adapt_calm = 0;
+    } else if (drops == 0) {
+        if (ble_decim > 1 && ++adapt_calm >= adapt_calm_need) {
+            ble_decim >>= 1;
+            adapt_last_probe = k_uptime_get();
+            adapt_calm = 0;
+            LOG_INF("link pacing: probe up, decim -> %u", ble_decim);
+        }
+    } else {
+        adapt_calm = 0;
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,30 +351,24 @@ void comm_manager_push_tick(const struct tick_sample *tick)
 
     build_data_frame();
 
-    /* Wired stream: decimated — the J-Link EDU Mini drains RTT at only
-     * ~2.3 kB/s, so send every 3rd DATA frame (~8 fps, 1.7 kB/s).
-     * BLE below carries the full 25 fps.
-     */
-    static uint8_t rtt_decim;
-
-    if (++rtt_decim >= 3) {
-        rtt_decim = 0;
+    /* Wired stream (probe-limited, fixed decimation) */
+    if (++rtt_skip >= RTT_DECIM) {
+        rtt_skip = 0;
         rtt_stream_write(frame_buf, COMM_DATA_FRAME_LEN);
     }
 
-    /* BLE: only when connected, subscribed and in binary mode */
+    /* BLE: AIMD-paced enqueue; TX thread does the sending */
     if (ble_manager_can_send() && mode == COMM_MODE_BINARY) {
-        if (atomic_cas(&data_busy, 0, 1)) {
-            memcpy(ble_data_buf, frame_buf, COMM_DATA_FRAME_LEN);
-            k_work_submit(&send_data_work);
-        } else {
-            dropped_frames++;
+        if (++ble_skip >= ble_decim) {
+            ble_skip = 0;
+            enqueue_frame(frame_buf, COMM_DATA_FRAME_LEN);
         }
     }
 }
 
 void comm_manager_push_status(bool sd_ok)
 {
+    adapt_pacing();
     build_status_frame(sd_ok);
     rtt_stream_write(status_frame_buf, COMM_STATUS_FRAME_LEN);
 
@@ -267,10 +378,8 @@ void comm_manager_push_status(bool sd_ok)
 
     if (mode == COMM_MODE_JSON) {
         ble_send_json_line();
-    } else if (atomic_cas(&status_busy, 0, 1)) {
-        memcpy(ble_status_buf, status_frame_buf, COMM_STATUS_FRAME_LEN);
-        ble_status_len = COMM_STATUS_FRAME_LEN;
-        k_work_submit(&send_status_work);
+    } else {
+        enqueue_frame(status_frame_buf, COMM_STATUS_FRAME_LEN);
     }
 }
 
@@ -298,5 +407,5 @@ static void on_rx(const uint8_t *data, uint16_t len)
 int comm_manager_init(void)
 {
     rtt_stream_init();
-    return ble_manager_init(on_rx);
+    return ble_manager_init(on_rx, on_tx_sent, on_tx_ready);
 }

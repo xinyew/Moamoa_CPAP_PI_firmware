@@ -38,7 +38,7 @@ if not hasattr(pylink, "JLink"):
     )
 
 MAGIC = 0xC9A5
-FRAME_LEN = {0x11: 204, 0x12: 43}  # v2 type -> length (comm_protocol.h)
+FRAME_LEN = {0x11: 204, 0x12: 45}  # v2 type -> length (comm_protocol.h)
 RTT_CHANNEL = 1
 
 clients = set()
