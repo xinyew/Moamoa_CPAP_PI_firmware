@@ -8,6 +8,7 @@
 #include "ppg_reader.h"
 
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(ppg_reader, LOG_LEVEL_INF);
@@ -18,6 +19,44 @@ static const struct device *const ppg_dev[PPG_COUNT] = {
     DEVICE_DT_GET(DT_NODELABEL(ppg3)),
     DEVICE_DT_GET(DT_NODELABEL(ppg4)),
 };
+
+/* Raw bus access for the SHDN bit (the in-tree driver has no
+ * power-mode API): one mux-channel bus per sensor, MODE_CFG @0x09.
+ */
+static const struct device *const ppg_bus[PPG_COUNT] = {
+    DEVICE_DT_GET(DT_NODELABEL(mux_i2c0)),
+    DEVICE_DT_GET(DT_NODELABEL(mux_i2c1)),
+    DEVICE_DT_GET(DT_NODELABEL(mux_i2c2)),
+    DEVICE_DT_GET(DT_NODELABEL(mux_i2c3)),
+};
+
+#define MAX30101_ADDR          0x57
+#define MAX30101_REG_MODE_CFG  0x09
+#define MAX30101_SHDN_MASK     0x80
+
+void ppg_reader_set_shutdown(bool sleep)
+{
+    for (int i = 0; i < PPG_COUNT; i++) {
+        if (!device_is_ready(ppg_dev[i])) {
+            continue;
+        }
+
+        uint8_t mode;
+
+        if (i2c_reg_read_byte(ppg_bus[i], MAX30101_ADDR,
+                              MAX30101_REG_MODE_CFG, &mode) < 0) {
+            continue;
+        }
+        if (sleep) {
+            mode |= MAX30101_SHDN_MASK;
+        } else {
+            mode &= ~MAX30101_SHDN_MASK;
+        }
+        i2c_reg_write_byte(ppg_bus[i], MAX30101_ADDR,
+                           MAX30101_REG_MODE_CFG, mode);
+    }
+    LOG_INF("PPG sensors %s", sleep ? "shut down" : "woken");
+}
 
 int ppg_reader_init(void)
 {

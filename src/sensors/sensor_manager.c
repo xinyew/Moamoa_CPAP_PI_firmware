@@ -113,11 +113,22 @@ static void sensor_thread_fn(void *a, void *b, void *c)
     uint32_t ppg_cnt = 0, baro_cnt = 0;
     bool baro_pending = false;
     bool want_baro_temp = false;
+    bool standby = false;
+    uint8_t absent_secs = 0;
     int64_t next_wake = k_uptime_get();
     int64_t next_second = k_uptime_get() + 1000;
 
     while (1) {
         struct tick_sample ts = {0};
+
+        /* STANDBY (mask absent >= 5 s): PPGs are shut down (the ~6 mA
+         * LED drive stops), baro/SHT/TMP sampling pauses, no DATA
+         * frames. Presence + battery keep running at 1 Hz and STATUS
+         * frames keep flowing so portal/SD show the state.
+         */
+        if (standby) {
+            goto slow_work;
+        }
 
         /* PPG every tick (100 Hz x4) */
         if (ppg_reader_read(d->ppg) > 0) {
@@ -147,9 +158,12 @@ static void sensor_thread_fn(void *a, void *b, void *c)
         comm_manager_push_tick(&ts);
 
         /* SHT40: one sensor per second-third (each at 1 Hz) */
-        uint32_t phase = tick % TICKS_PER_SECOND;
+        uint32_t phase;
 
-        if (phase == 20 || phase == 53 || phase == 86) {
+slow_work:
+        phase = tick % TICKS_PER_SECOND;
+
+        if (!standby && (phase == 20 || phase == 53 || phase == 86)) {
             int idx = (phase == 20) ? 0 : (phase == 53) ? 1 : 2;
 
             if (d->sht_mask & BIT(idx)) {
@@ -161,20 +175,41 @@ static void sensor_thread_fn(void *a, void *b, void *c)
         /* TMP117 one-shot: trigger at phase 40, results are ready
          * ~124 ms later (8-sample averaging) — read at phase 70.
          */
-        if (phase == 40) {
+        if (!standby && phase == 40) {
             tmp117_reader_trigger();
         }
 
         /* TMP117 + battery + presence at 1 Hz */
         if (phase == 70) {
-            for (int i = 0; i < TMP_COUNT; i++) {
-                if (d->tmp_mask & BIT(i)) {
-                    tmp117_reader_read(i, &d->tmp_c100_n[i]);
+            if (!standby) {
+                for (int i = 0; i < TMP_COUNT; i++) {
+                    if (d->tmp_mask & BIT(i)) {
+                        tmp117_reader_read(i, &d->tmp_c100_n[i]);
+                    }
                 }
             }
             drv_batt_read(&d->vbat_mv);
             d->mask_present = (bus_diag_sample_presence() == 1);
             d->sd_ok = sd_logger_active();  /* live logging state */
+
+            /* Standby transitions */
+            if (d->mask_present) {
+                absent_secs = 0;
+                if (standby) {
+                    standby = false;
+                    ppg_reader_set_shutdown(false);
+                    LOG_INF("mask attached - sensing resumed");
+                }
+            } else if (!standby) {
+                if (++absent_secs >= 5) {
+                    standby = true;
+                    ppg_reader_set_shutdown(true);
+                    for (int i = 0; i < PPG_COUNT; i++) {
+                        d->ppg[i].valid = false;
+                    }
+                    LOG_INF("mask absent 5 s - STANDBY (PPGs off)");
+                }
+            }
         }
 
         tick++;

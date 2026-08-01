@@ -28,4 +28,14 @@ int ppg_reader_init(void);
  */
 int ppg_reader_read(struct ppg_sample out[PPG_COUNT]);
 
+/**
+ * @brief Put all present sensors in shutdown (LEDs off, ~0.7 uA each)
+ *        or wake them.
+ *
+ * SHDN preserves the configuration registers, so waking resumes with
+ * the devicetree-applied settings. This is the dominant power lever:
+ * the 4x3 LED drive (~6 mA @5 V) stops entirely.
+ */
+void ppg_reader_set_shutdown(bool sleep);
+
 #endif /* PPG_READER_H */
