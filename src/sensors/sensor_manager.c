@@ -158,6 +158,13 @@ static void sensor_thread_fn(void *a, void *b, void *c)
             }
         }
 
+        /* TMP117 one-shot: trigger at phase 40, results are ready
+         * ~124 ms later (8-sample averaging) — read at phase 70.
+         */
+        if (phase == 40) {
+            tmp117_reader_trigger();
+        }
+
         /* TMP117 + battery + presence at 1 Hz */
         if (phase == 70) {
             for (int i = 0; i < TMP_COUNT; i++) {
