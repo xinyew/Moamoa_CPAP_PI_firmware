@@ -25,4 +25,12 @@ void sd_logger_write(const uint8_t *frame, uint16_t len);
 /** @brief True while a card is mounted and a log file is open. */
 bool sd_logger_active(void);
 
+/**
+ * @brief Writer-thread liveness counter (increments every loop pass).
+ *
+ * If this stops advancing while data is flowing, the writer is stuck
+ * inside the SD driver — diagnostic for hot-unplug behavior.
+ */
+uint32_t sd_logger_writer_beats(void);
+
 #endif /* SD_LOGGER_H */

@@ -87,8 +87,9 @@ static void print_summary(uint32_t seconds)
             printk(" %d:--", i + 1);
         }
     }
-    printk(" | VBAT %d mV | mask %s\n", d->vbat_mv,
-           d->mask_present ? "OK" : "ABSENT");
+    printk(" | VBAT %d mV | mask %s | SD %s wb=%u\n", d->vbat_mv,
+           d->mask_present ? "OK" : "ABSENT",
+           d->sd_ok ? "on" : "off", sd_logger_writer_beats());
 }
 
 static void sensor_thread_fn(void *a, void *b, void *c)

@@ -38,6 +38,7 @@ LOG_MODULE_REGISTER(sd_logger, LOG_LEVEL_INF);
 #define ROTATE_MS      (15 * 60 * 1000)
 #define RETRY_MS       10000
 #define MIN_FREE_KB    (64 * 1024)   /* delete oldest below 64 MB free */
+#define VERIFY_MS      3000          /* card proof-of-presence period */
 
 /* --- SPSC ring: producer = sensor thread, consumer = writer ------- */
 
@@ -66,7 +67,14 @@ static uint32_t file_num;
 static uint32_t file_bytes;
 static int64_t file_opened_at;
 static int64_t last_fsync;
+static int64_t last_verify;
 static atomic_t active_flag;
+static atomic_t writer_beats;
+
+uint32_t sd_logger_writer_beats(void)
+{
+    return (uint32_t)atomic_get(&writer_beats);
+}
 
 void sd_logger_write(const uint8_t *frame, uint16_t len)
 {
@@ -228,6 +236,27 @@ static void close_file(void)
     }
 }
 
+/* Active proof-of-presence: read sector 0 and require the MBR/FAT
+ * boot signature (0x55AA at offset 510).
+ *
+ * Removal detection must NOT rely on writes *failing*: with the card
+ * out, the SPI MISO line floats, and depending on how it floats the
+ * driver can read patterns that pass for success — ghost writes
+ * "succeed" and the error path never fires (observed in the field:
+ * SD status never dropped after unplug). Floating-bus noise cannot
+ * counterfeit the exact 0x55AA signature, so this check is
+ * deterministic in both float polarities.
+ */
+static bool card_present_verify(void)
+{
+    static uint8_t sector[512];
+
+    if (disk_access_read("SD", sector, 0, 1) != 0) {
+        return false;
+    }
+    return sector[510] == 0x55 && sector[511] == 0xAA;
+}
+
 static void force_disk_deinit(void)
 {
     /* disk_access_init() is REFCOUNTED: once the disk initialized,
@@ -319,6 +348,7 @@ static void writer_thread_fn(void *a, void *b, void *c)
     k_sem_init(&data_sem, 0, 1);
 
     while (1) {
+        atomic_inc(&writer_beats);
         if (!atomic_get(&active_flag)) {
             if (!try_bring_up()) {
                 k_msleep(RETRY_MS);
@@ -337,6 +367,15 @@ static void writer_thread_fn(void *a, void *b, void *c)
         }
 
         int64_t now = k_uptime_get();
+
+        if (now - last_verify >= VERIFY_MS) {
+            last_verify = now;
+            if (!card_present_verify()) {
+                LOG_WRN("card removed (presence verify failed)");
+                teardown();
+                continue;
+            }
+        }
 
         if (file_open && now - last_fsync >= FSYNC_MS) {
             if (fs_sync(&logf) != 0) {
