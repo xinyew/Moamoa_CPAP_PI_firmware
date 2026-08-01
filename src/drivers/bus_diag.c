@@ -42,6 +42,29 @@ static const uint8_t expected[4][4] = {
     { 0x57, 0x77, 0x44, 0x48 },
 };
 
+int bus_diag_sample_presence(void)
+{
+    /* The mask GROUNDS both PRESEN pins, so a permanently-enabled
+     * internal pull-up (13 kohm to 3.3 V) burns ~0.25 mA per pin the
+     * whole time the mask is attached. Instead: float the pins except
+     * for a ~100 us pulled-up sampling window once per call.
+     */
+    gpio_pin_configure_dt(&presen_a, GPIO_INPUT);
+    gpio_pin_configure_dt(&presen_b, GPIO_INPUT);
+    k_busy_wait(100);
+
+    int a = gpio_pin_get_dt(&presen_a);
+    int b = gpio_pin_get_dt(&presen_b);
+
+    gpio_pin_configure_dt(&presen_a, GPIO_DISCONNECTED);
+    gpio_pin_configure_dt(&presen_b, GPIO_DISCONNECTED);
+
+    if (a < 0 || b < 0) {
+        return (a < 0) ? a : b;
+    }
+    return (a == 1 && b == 1) ? 1 : 0;
+}
+
 int bus_diag_prepare_mask_bus(void)
 {
     int ret;
@@ -57,17 +80,13 @@ int bus_diag_prepare_mask_bus(void)
     if (ret < 0) {
         return ret;
     }
-    gpio_pin_configure_dt(&presen_a, GPIO_INPUT);
-    gpio_pin_configure_dt(&presen_b, GPIO_INPUT);
     k_msleep(2);
 
-    int a = gpio_pin_get_dt(&presen_a);
-    int b = gpio_pin_get_dt(&presen_b);
+    int present = bus_diag_sample_presence();
 
-    LOG_INF("PCA9517A enabled; mask presence A=%d B=%d %s", a, b,
-            (a == 1 && b == 1) ? "(mask attached)" :
-            (a || b) ? "(PARTIAL - check FFC seating!)" : "(no mask)");
-    return (a == 1 && b == 1) ? 1 : 0;
+    LOG_INF("PCA9517A enabled; mask %s",
+            present == 1 ? "attached" : "NOT attached");
+    return present;
 }
 
 static bool probe_addr(const struct device *bus, uint8_t addr)

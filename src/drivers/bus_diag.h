@@ -14,6 +14,16 @@
 int bus_diag_prepare_mask_bus(void);
 
 /**
+ * @brief Sample mask presence (pulsed pull-ups, ~100 us).
+ *
+ * Pins float between calls so the mask's grounds don't burn the
+ * internal pull-ups continuously. Call at a low rate (1 Hz).
+ *
+ * @return 1 attached, 0 not attached, negative errno on failure.
+ */
+int bus_diag_sample_presence(void);
+
+/**
  * @brief Scan all four TCA9546A channels for the expected sensor
  *        clusters and check every MAX30101 PART_ID.
  *

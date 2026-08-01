@@ -21,12 +21,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/drivers/gpio.h>
 #include <string.h>
 
 #include "ppg_reader.h"
 #include "sht40_reader.h"
 #include "tmp117_reader.h"
+#include "../drivers/bus_diag.h"
 #include "../drivers/driver_batt.h"
 #include "../drivers/driver_ms5611.h"
 #include "../comm/comm_manager.h"
@@ -42,10 +42,6 @@ struct system_sensor_data g_sensor_data;
 static K_THREAD_STACK_DEFINE(sensor_stack, 4096);
 static struct k_thread sensor_thread;
 
-static const struct gpio_dt_spec presen_a =
-    GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), presen_a_gpios);
-static const struct gpio_dt_spec presen_b =
-    GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), presen_b_gpios);
 
 static void print_summary(uint32_t seconds)
 {
@@ -173,8 +169,7 @@ static void sensor_thread_fn(void *a, void *b, void *c)
                 }
             }
             drv_batt_read(&d->vbat_mv);
-            d->mask_present = (gpio_pin_get_dt(&presen_a) == 1) &&
-                              (gpio_pin_get_dt(&presen_b) == 1);
+            d->mask_present = (bus_diag_sample_presence() == 1);
             d->sd_ok = sd_logger_active();  /* live logging state */
         }
 
