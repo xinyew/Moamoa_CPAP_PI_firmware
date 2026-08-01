@@ -228,6 +228,20 @@ static void close_file(void)
     }
 }
 
+static void force_disk_deinit(void)
+{
+    /* disk_access_init() is REFCOUNTED: once the disk initialized,
+     * later calls just bump the count and return 0 without touching
+     * the card. A reinserted card needs the full SD init sequence,
+     * so hot-plug recovery requires a forced driver deinit — without
+     * this, a removed-then-reinserted card never mounts again until
+     * reboot.
+     */
+    bool force = true;
+
+    disk_access_ioctl("SD", DISK_IOCTL_CTRL_DEINIT, &force);
+}
+
 static void teardown(void)
 {
     close_file();
@@ -235,16 +249,19 @@ static void teardown(void)
         fs_unmount(&mp);
         mounted = false;
     }
+    force_disk_deinit();
     atomic_set(&active_flag, 0);
 }
 
 static bool try_bring_up(void)
 {
     if (disk_access_init("SD") != 0) {
+        force_disk_deinit();
         return false;
     }
     if (fs_mount(&mp) != 0) {
-        LOG_WRN("FAT mount failed (card unformatted?)");
+        LOG_WRN("FAT mount failed (card absent/unformatted?)");
+        force_disk_deinit();
         return false;
     }
     mounted = true;
