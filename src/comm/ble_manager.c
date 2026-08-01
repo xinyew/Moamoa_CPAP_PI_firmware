@@ -114,21 +114,53 @@ static void connected(struct bt_conn *conn, uint8_t err)
 #endif
 }
 
+/* Advertising backoff: fast (30-60 ms) for the first 30 s after boot
+ * or a disconnect so tablets connect instantly, then slow (~1 s
+ * interval, ~30 uA average vs several hundred) — scanners still find
+ * the board, discovery just takes a second or two longer.
+ */
+#define ADV_FAST_PERIOD_S  30
+
 static struct bt_le_adv_param adv_param;  /* saved for re-advertise */
+
+static int start_advertising(bool fast)
+{
+    adv_param = (struct bt_le_adv_param)BT_LE_ADV_PARAM_INIT(
+        BT_LE_ADV_OPT_CONN,
+        fast ? BT_GAP_ADV_FAST_INT_MIN_1 : BT_GAP_ADV_SLOW_INT_MIN,
+        fast ? BT_GAP_ADV_FAST_INT_MAX_1 : BT_GAP_ADV_SLOW_INT_MAX,
+        NULL);
+    return bt_le_adv_start(&adv_param, ad, ARRAY_SIZE(ad),
+                           sd, ARRAY_SIZE(sd));
+}
 
 static void restart_advertise(struct k_work *work)
 {
     ARG_UNUSED(work);
-    int ret = bt_le_adv_start(&adv_param, ad, ARRAY_SIZE(ad),
-                              sd, ARRAY_SIZE(sd));
+    int ret = start_advertising(true);
+
     if (ret) {
         LOG_ERR("BLE re-advertise failed: %d", ret);
     } else {
-        LOG_INF("BLE re-advertising");
+        LOG_INF("BLE re-advertising (fast)");
+    }
+}
+
+static void slow_advertise(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    if (atomic_get(&connected_flag)) {
+        return;  /* connected meanwhile — nothing to slow down */
+    }
+    bt_le_adv_stop();
+    if (start_advertising(false) == 0) {
+        LOG_INF("BLE advertising slowed (power save)");
     }
 }
 
 static K_WORK_DELAYABLE_DEFINE(adv_restart_work, restart_advertise);
+static K_WORK_DELAYABLE_DEFINE(adv_slow_work, slow_advertise);
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
@@ -144,6 +176,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
     /* Defer re-advertise — must not run in the stack's own context */
     k_work_schedule(&adv_restart_work, K_MSEC(50));
+    k_work_reschedule(&adv_slow_work, K_SECONDS(ADV_FAST_PERIOD_S));
 }
 
 static struct bt_conn_cb conn_callbacks = {
@@ -178,16 +211,12 @@ int ble_manager_init(ble_rx_cb_t rx_cb, ble_tx_sent_cb_t sent_cb,
         return ret;
     }
 
-    adv_param = (struct bt_le_adv_param)BT_LE_ADV_PARAM_INIT(
-        BT_LE_ADV_OPT_CONN,
-        BT_GAP_ADV_FAST_INT_MIN_1,
-        BT_GAP_ADV_FAST_INT_MAX_1,
-        NULL);
-    ret = bt_le_adv_start(&adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+    ret = start_advertising(true);
     if (ret) {
         LOG_ERR("BLE advertising start failed: %d", ret);
         return ret;
     }
+    k_work_schedule(&adv_slow_work, K_SECONDS(ADV_FAST_PERIOD_S));
 
     LOG_INF("BLE advertising as \"%s\" (NUS)", CONFIG_BT_DEVICE_NAME);
     return 0;
