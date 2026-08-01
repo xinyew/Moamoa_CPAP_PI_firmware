@@ -44,14 +44,30 @@
  *    44  u8   ble_decim (current AIMD pacing: send every Nth frame)
  *    45  total
  *
- * NUS RX commands (single ASCII byte):
+ * TSYNC record (type 0x13, 16 B) — SD log only, one per second once
+ * the wall clock is known (continuous pairs let the offline reader
+ * fit RC-oscillator drift):
+ *
+ *     0  u16  magic 0xC9A5
+ *     2  u8   type = 0x13
+ *     3  u8   seq
+ *     4  u32  uptime_ms
+ *     8  u64  epoch_ms (unix wall clock at that uptime)
+ *    16  total
+ *
+ * NUS RX commands:
  *   'B' — binary streaming (default)
  *   'J' — JSON debug mode: 1 Hz JSON line on BLE instead of frames
+ *   'T' + u64 epoch_ms LE — wall-clock sync (portal/tablet sends on
+ *         connect; retroactively timestamps the whole boot's uptime
+ *         timeline in the SD log)
  */
 
 #define COMM_MAGIC          0xC9A5
 #define COMM_TYPE_DATA      0x11
 #define COMM_TYPE_STATUS    0x12
+#define COMM_TYPE_TSYNC     0x13
+#define COMM_TSYNC_FRAME_LEN 16
 
 #define COMM_TICKS_PER_FRAME  4
 #define COMM_DATA_FRAME_LEN   204
@@ -59,5 +75,6 @@
 
 #define COMM_CMD_BINARY     'B'
 #define COMM_CMD_JSON       'J'
+#define COMM_CMD_TIMESYNC   'T'
 
 #endif /* COMM_PROTOCOL_H */

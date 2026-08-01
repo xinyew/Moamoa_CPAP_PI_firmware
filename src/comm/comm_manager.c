@@ -29,10 +29,12 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "../drivers/driver_ms5611.h"
+#include "../storage/sd_logger.h"
 
 LOG_MODULE_REGISTER(comm_mgr, LOG_LEVEL_INF);
 
@@ -80,6 +82,13 @@ static uint8_t last_drops_sec;
 /* RTT wired decimation (probe bandwidth, fixed) */
 #define RTT_DECIM  3
 static uint8_t rtt_skip;
+
+/* Wall clock: epoch_ms - uptime_ms, set by the 'T' command (BT RX
+ * context writes, sensor thread reads — 64-bit, so guard with a
+ * simple seqlock-free scheme: valid flag written last/read first).
+ */
+static int64_t epoch_offset_ms;
+static atomic_t epoch_valid;
 
 /* -------------------------------------------------------------------------- */
 /*  Little-endian helpers                                                     */
@@ -300,6 +309,27 @@ static void ble_send_json_line(void)
     enqueue_frame(json, MIN((uint16_t)len, (uint16_t)sizeof(json)));
 }
 
+/* TSYNC record (SD only): emitted every second once the clock is
+ * known — the continuous (uptime, epoch) pairs let the offline reader
+ * fit RC-oscillator drift.
+ */
+static void sd_write_tsync(void)
+{
+    if (!atomic_get(&epoch_valid)) {
+        return;
+    }
+
+    uint8_t f[COMM_TSYNC_FRAME_LEN];
+    uint32_t up = k_uptime_get_32();
+
+    put_u16(f, COMM_MAGIC);
+    f[2] = COMM_TYPE_TSYNC;
+    f[3] = seq++;
+    put_u32(&f[4], up);
+    sys_put_le64((uint64_t)(epoch_offset_ms + up), &f[8]);
+    sd_logger_write(f, sizeof(f));
+}
+
 /* -------------------------------------------------------------------------- */
 /*  AIMD link pacing (called once per real second)                            */
 /* -------------------------------------------------------------------------- */
@@ -351,6 +381,9 @@ void comm_manager_push_tick(const struct tick_sample *tick)
 
     build_data_frame();
 
+    /* SD log: every frame, full rate (the card is the primary record) */
+    sd_logger_write(frame_buf, COMM_DATA_FRAME_LEN);
+
     /* Wired stream (probe-limited, fixed decimation) */
     if (++rtt_skip >= RTT_DECIM) {
         rtt_skip = 0;
@@ -370,6 +403,8 @@ void comm_manager_push_status(bool sd_ok)
 {
     adapt_pacing();
     build_status_frame(sd_ok);
+    sd_logger_write(status_frame_buf, COMM_STATUS_FRAME_LEN);
+    sd_write_tsync();
     rtt_stream_write(status_frame_buf, COMM_STATUS_FRAME_LEN);
 
     if (!ble_manager_can_send()) {
@@ -397,6 +432,18 @@ static void on_rx(const uint8_t *data, uint16_t len)
     case COMM_CMD_JSON:
         mode = COMM_MODE_JSON;
         LOG_INF("mode: JSON debug");
+        break;
+    case COMM_CMD_TIMESYNC:
+        if (len >= 9) {
+            uint64_t epoch = sys_get_le64(&data[1]);
+
+            /* Store only; the sensor thread emits the TSYNC records
+             * (keeps the SD ring single-producer).
+             */
+            epoch_offset_ms = (int64_t)epoch - k_uptime_get();
+            atomic_set(&epoch_valid, 1);
+            LOG_INF("wall clock synced (epoch %llu ms)", epoch);
+        }
         break;
     default:
         LOG_WRN("unknown command 0x%02X", data[0]);

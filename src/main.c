@@ -11,6 +11,7 @@
 #include "drivers/driver_led.h"
 #include "sensors/sensor_manager.h"
 #include "comm/comm_manager.h"
+#include "storage/sd_logger.h"
 
 LOG_MODULE_REGISTER(kmm_pmask_main, LOG_LEVEL_DBG);
 
@@ -41,6 +42,9 @@ int main(void)
     if (comm_manager_init() < 0) {
         LOG_ERR("Failed to init comm layer");
     }
+
+    /* SD logging: log-by-default whenever a card is present */
+    sd_logger_start();
 
     /* Sampling thread: PPG x4 + baro x4 @100 Hz, SHT/TMP/batt @1 Hz */
     sensor_manager_start();

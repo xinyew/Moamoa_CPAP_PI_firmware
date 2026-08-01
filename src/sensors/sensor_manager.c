@@ -30,6 +30,7 @@
 #include "../drivers/driver_batt.h"
 #include "../drivers/driver_ms5611.h"
 #include "../comm/comm_manager.h"
+#include "../storage/sd_logger.h"
 
 LOG_MODULE_REGISTER(sensor_mgr, LOG_LEVEL_INF);
 
@@ -174,6 +175,7 @@ static void sensor_thread_fn(void *a, void *b, void *c)
             drv_batt_read(&d->vbat_mv);
             d->mask_present = (gpio_pin_get_dt(&presen_a) == 1) &&
                               (gpio_pin_get_dt(&presen_b) == 1);
+            d->sd_ok = sd_logger_active();  /* live logging state */
         }
 
         tick++;

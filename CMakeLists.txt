@@ -19,6 +19,7 @@ target_sources(app PRIVATE
     src/comm/comm_manager.c
     src/comm/rtt_stream.c
     src/comm/tput_sink.c
+    src/storage/sd_logger.c
 )
 # target_sources(app PRIVATE src/myfunc.c)
 target_sources_ifdef(CONFIG_MYFUNC app PRIVATE src/myfunc.c)

@@ -32,6 +32,7 @@ from bleak import BleakClient, BleakScanner
 
 DEVICE_PREFIX = "KMM"
 CHAR_UUID_TPUT = "0000ffe7-0000-1000-8000-00805f9b34fb"
+NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
 
 async def discover(name_prefix: str):
@@ -75,6 +76,69 @@ async def tput_test(device, kib: int):
         print(f"  sent {sent} B, device counted {got} B"
               f"{'  (LOSS!)' if got != sent else ''}")
         print(f"  elapsed {dt:.2f} s -> {sent / dt / 1024:.1f} KiB/s")
+
+
+async def time_sync(device):
+    """Send the wall clock ('T' + u64 epoch ms) over NUS RX."""
+    import time
+
+    async with BleakClient(device,
+                           winrt=dict(use_cached_services=False)) as client:
+        epoch = int(time.time() * 1000)
+        await client.write_gatt_char(
+            NUS_RX_UUID, b"T" + struct.pack("<Q", epoch), response=False)
+        print(f"Wall clock synced: {epoch} ms")
+
+
+async def fetch(device, name: str, outdir: str):
+    """Download a log file (or INDEX.TXT) over MCUmgr SMP FS."""
+    try:
+        from smpclient import SMPClient
+        from smpclient.transport.ble import SMPBLETransport
+    except ImportError:
+        print("Fetch requires the smpclient package:  pip install smpclient",
+              file=sys.stderr)
+        sys.exit(1)
+    import os
+
+    os.makedirs(outdir, exist_ok=True)
+    async with SMPClient(SMPBLETransport(), device.address,
+                         timeout_s=20.0) as client:
+        names = [name]
+        if name.upper() == "INDEX":
+            names = ["INDEX.TXT"]
+
+        for n in names:
+            path = f"/SD:/LOG/{n}"
+            out = os.path.join(outdir, n)
+            print(f"fetching {path} ...")
+            data = bytearray()
+            async for offset, total, chunk in _fs_download(client, path):
+                data.extend(chunk)
+                print(f"\r  {len(data)}/{total} B", end="", flush=True)
+            with open(out, "wb") as f:
+                f.write(data)
+            print(f"\r  saved {out} ({len(data)} B)      ")
+
+
+async def _fs_download(client, path):
+    """Minimal SMP fs download generator (offset, total, chunk)."""
+    from smpclient.requests.file_management import FileDownload
+    from smpclient.generics import error
+
+    offset = 0
+    total = None
+    while True:
+        r = await client.request(FileDownload(off=offset, name=path))
+        if error(r):
+            raise RuntimeError(f"fs download error at offset {offset}: {r}")
+        if hasattr(r, "len") and r.len is not None:
+            total = r.len
+        chunk = r.data
+        yield offset, total or 0, chunk
+        offset += len(chunk)
+        if total is not None and offset >= total:
+            return
 
 
 async def dfu(device, path: str):
@@ -153,15 +217,28 @@ async def main():
                         help="throughput test (default 64 KiB)")
     parser.add_argument("--dfu", metavar="SIGNED_BIN", default=None,
                         help="OTA update with a zephyr.signed.bin")
+    parser.add_argument("--sync", action="store_true",
+                        help="sync the board's wall clock (SD timestamps)")
+    parser.add_argument("--fetch", metavar="FILE", default=None,
+                        help="download a log file over BLE "
+                             "(INDEX for the file list)")
+    parser.add_argument("--outdir", default="fetched",
+                        help="output directory for --fetch")
     parser.add_argument("--name", default=DEVICE_PREFIX,
                         help=f"device name prefix (default {DEVICE_PREFIX})")
     args = parser.parse_args()
 
-    if args.tput is None and args.dfu is None:
-        parser.error("pick a function: --tput [KiB] or --dfu <image>")
+    if (args.tput is None and args.dfu is None and not args.sync
+            and args.fetch is None):
+        parser.error("pick a function: --tput [KiB], --dfu <image>, "
+                     "--sync or --fetch <file|INDEX>")
 
     device = await discover(args.name)
 
+    if args.sync:
+        await time_sync(device)
+    if args.fetch is not None:
+        await fetch(device, args.fetch, args.outdir)
     if args.dfu is not None:
         await dfu(device, args.dfu)
     if args.tput is not None:
