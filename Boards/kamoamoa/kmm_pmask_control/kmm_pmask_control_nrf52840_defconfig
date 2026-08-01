@@ -2,10 +2,9 @@
 CONFIG_GPIO=y
 CONFIG_ARM_MPU=y
 
-# Subsystem defaults for KMM PMask Control hardware
-CONFIG_I2C=y
-CONFIG_SPI=y
-CONFIG_ADC=y
+# Subsystem enables (I2C/SPI/ADC) live in the app prj.conf, NOT here:
+# this defconfig also configures the MCUboot child image, whose
+# no-multithreading environment cannot build the SAADC driver.
 
 # Disable UART, Enable Segger RTT for Debug
 CONFIG_SERIAL=n

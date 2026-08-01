@@ -18,6 +18,7 @@ target_sources(app PRIVATE
     src/comm/ble_manager.c
     src/comm/comm_manager.c
     src/comm/rtt_stream.c
+    src/comm/tput_sink.c
 )
 # target_sources(app PRIVATE src/myfunc.c)
 target_sources_ifdef(CONFIG_MYFUNC app PRIVATE src/myfunc.c)
