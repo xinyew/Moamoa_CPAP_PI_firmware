@@ -5,8 +5,8 @@
  *   tick = 10 ms (100 Hz), absolute-deadline scheduled
  *   - PPG: one FIFO sample per ready MAX30101 every tick (100 Hz x4)
  *   - MS5611 x4 (I2C): read previous conversion + start next every
- *     tick (OSR 2048, 4.6 ms < 10 ms) -> 100 Hz pressure; one cycle
- *     per second converts temperature instead
+ *     4th tick (OSR 2048) -> 25 Hz pressure; one cycle per second
+ *     converts temperature instead
  *   - SHT40 x3: one sensor per second-third (each 1 Hz, blocking
  *     ~8.3 ms in its tick — the absolute scheduler absorbs it)
  *   - TMP117 x3 + battery + presence: 1 Hz
@@ -125,15 +125,12 @@ static void sensor_thread_fn(void *a, void *b, void *c)
         }
         memcpy(ts.ppg, d->ppg, sizeof(ts.ppg));
 
-        /* MS5611 at 100 Hz: read previous conversion, start next.
-         * One cycle per second converts temperature instead.
+        /* Baro at 25 Hz (every 4th tick): read the conversion started
+         * 40 ms ago (>> 4.6 ms at OSR 2048), start the next. Contact
+         * pressure is quasi-static; 25 Hz halves the ~22% conversion
+         * duty (~0.6 mA saved across the four sensors) vs 50 Hz.
          */
-        /* Baro at 50 Hz (every 2nd tick): read the conversion started
-         * two ticks ago (20 ms >> 4.6 ms at OSR 2048), start the next.
-         * Halving the baro I2C traffic keeps the whole tick under
-         * 10 ms; pressure content is low-frequency anyway.
-         */
-        if (d->baro_ok_mask != 0 && (tick & 1) == 0) {
+        if (d->baro_ok_mask != 0 && (tick & 3) == 0) {
             if (baro_pending && drv_ms5611_finish_conv() == 0) {
                 for (int i = 0; i < MS5611_COUNT; i++) {
                     drv_ms5611_get(i, &d->baro_pa[i], &d->baro_temp_c100[i]);
