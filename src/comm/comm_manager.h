@@ -28,4 +28,11 @@ void comm_manager_push_tick(const struct tick_sample *tick);
  */
 void comm_manager_push_status(bool sd_ok);
 
+/**
+ * @brief Remote sensing enable ('P' command state; boot default true).
+ *
+ * The sensor manager gates all sensing on this AND mask presence.
+ */
+bool comm_manager_sensing_enabled(void);
+
 #endif /* COMM_MANAGER_H */

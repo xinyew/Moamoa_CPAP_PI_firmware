@@ -90,6 +90,16 @@ static uint8_t rtt_skip;
 static int64_t epoch_offset_ms;
 static atomic_t epoch_valid;
 
+/* Remote sensing enable ('P' command). Boot default ON; survives
+ * disconnects on purpose (a reboot always restores sensing).
+ */
+static atomic_t sensing_enable = ATOMIC_INIT(1);
+
+bool comm_manager_sensing_enabled(void)
+{
+    return atomic_get(&sensing_enable) != 0;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Little-endian helpers                                                     */
 /* -------------------------------------------------------------------------- */
@@ -269,7 +279,8 @@ static void build_status_frame(bool sd_ok)
         put_u16(&p[26 + 2 * i], (uint16_t)(int16_t)d->baro_temp_c100[i]);
     }
     put_u16(&p[34], (uint16_t)MAX(d->vbat_mv, 0));
-    p[36] = (d->mask_present ? BIT(0) : 0) | (sd_ok ? BIT(1) : 0);
+    p[36] = (d->mask_present ? BIT(0) : 0) | (sd_ok ? BIT(1) : 0) |
+            (d->sensing_on ? BIT(2) : 0);
     p[37] = (uint8_t)MIN(d->ppg_rate, 255U);
     p[38] = (uint8_t)MIN(d->baro_rate, 255U);
     p[39] = ppg_mask;
@@ -432,6 +443,12 @@ static void on_rx(const uint8_t *data, uint16_t len)
     case COMM_CMD_JSON:
         mode = COMM_MODE_JSON;
         LOG_INF("mode: JSON debug");
+        break;
+    case COMM_CMD_POWER:
+        if (len >= 2) {
+            atomic_set(&sensing_enable, data[1] ? 1 : 0);
+            LOG_INF("remote sensing %s", data[1] ? "ENABLED" : "DISABLED");
+        }
         break;
     case COMM_CMD_TIMESYNC:
         if (len >= 9) {

@@ -33,7 +33,8 @@
  *    20  3 x i16 tmp117 temp (0.01 C) = 6 B
  *    26  4 x i16 baro temp (0.01 C) = 8 B
  *    34  u16  vbat_mv
- *    36  u8   flags (bit0 = mask present, bit1 = SD ok)
+ *    36  u8   flags (bit0 = mask present, bit1 = SD ok,
+ *                    bit2 = sensing active)
  *    37  u8   rate_ppg (Hz achieved)
  *    38  u8   rate_baro
  *    39  u8   ppg_valid_mask
@@ -61,6 +62,12 @@
  *   'T' + u64 epoch_ms LE — wall-clock sync (portal/tablet sends on
  *         connect; retroactively timestamps the whole boot's uptime
  *         timeline in the SD log)
+ *   'P' + u8 (0=off, 1=on) — remote sensing enable. OFF = same power
+ *         state as mask-absent standby (PPG LEDs off, sampling
+ *         paused, no DATA frames; STATUS/presence/battery continue).
+ *         Sensing runs only when remote-enabled AND mask present.
+ *         Survives disconnects; boot default is ON. Actual state is
+ *         reported in STATUS flags bit2.
  */
 
 #define COMM_MAGIC          0xC9A5
@@ -76,5 +83,6 @@
 #define COMM_CMD_BINARY     'B'
 #define COMM_CMD_JSON       'J'
 #define COMM_CMD_TIMESYNC   'T'
+#define COMM_CMD_POWER      'P'
 
 #endif /* COMM_PROTOCOL_H */

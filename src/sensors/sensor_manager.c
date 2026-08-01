@@ -107,6 +107,7 @@ static void sensor_thread_fn(void *a, void *b, void *c)
     if (drv_batt_init() < 0) {
         LOG_ERR("battery ADC init failed");
     }
+    d->sensing_on = true;
 
     uint32_t tick = 0;
     uint32_t seconds = 0;
@@ -192,24 +193,34 @@ slow_work:
             d->mask_present = (bus_diag_sample_presence() == 1);
             d->sd_ok = sd_logger_active();  /* live logging state */
 
-            /* Standby transitions */
+            /* Standby transitions: sensing runs only when the remote
+             * enable ('P' command, default on) is set AND the mask is
+             * present (5 s absence hysteresis; remote-off is instant).
+             */
             if (d->mask_present) {
                 absent_secs = 0;
+            } else if (absent_secs < 5) {
+                absent_secs++;
+            }
+
+            bool want_run = comm_manager_sensing_enabled() &&
+                            (absent_secs < 5);
+
+            if (want_run == standby) {  /* state change needed */
+                standby = !want_run;
+                ppg_reader_set_shutdown(standby);
                 if (standby) {
-                    standby = false;
-                    ppg_reader_set_shutdown(false);
-                    LOG_INF("mask attached - sensing resumed");
-                }
-            } else if (!standby) {
-                if (++absent_secs >= 5) {
-                    standby = true;
-                    ppg_reader_set_shutdown(true);
                     for (int i = 0; i < PPG_COUNT; i++) {
                         d->ppg[i].valid = false;
                     }
-                    LOG_INF("mask absent 5 s - STANDBY (PPGs off)");
                 }
+                LOG_INF("%s", standby ?
+                        (comm_manager_sensing_enabled() ?
+                         "mask absent 5 s - STANDBY (PPGs off)" :
+                         "remote command - STANDBY (PPGs off)") :
+                        "sensing resumed");
             }
+            d->sensing_on = !standby;
         }
 
         tick++;
