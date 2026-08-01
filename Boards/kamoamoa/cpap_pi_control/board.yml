@@ -1,6 +1,6 @@
 board:
   name: cpap_pi_control
-  full_name: CPAP PI Sensor Control Board
+  full_name: CPAP PI Control Board
   vendor: kamoamoa
   socs:
     - name: nrf52840

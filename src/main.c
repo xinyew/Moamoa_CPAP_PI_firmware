@@ -1,6 +1,6 @@
 /*
- * KMM PMask Control — PPG + Pressure + Temp/Humidity Sensing Firmware
- * Custom nRF52840 board (kmm_pmask_control/nrf52840, Raytac MDBT50Q-P1MV2)
+ * CPAP PI Control — PPG + Pressure + Temp/Humidity Sensing Firmware
+ * Custom nRF52840 board (cpap_pi_control/nrf52840, Raytac MDBT50Q-P1MV2)
  */
 
 #include <zephyr/kernel.h>
@@ -13,11 +13,11 @@
 #include "comm/comm_manager.h"
 #include "storage/sd_logger.h"
 
-LOG_MODULE_REGISTER(kmm_pmask_main, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(cpap_pi_main, LOG_LEVEL_DBG);
 
 int main(void)
 {
-    printk("\n=== KMM PMask Control Boot ===\n");
+    printk("\n=== CPAP PI Control Boot ===\n");
 
     /* Debug LEDs (P0.19/21/20/22, active low) */
     if (drv_led_init() < 0) {

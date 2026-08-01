@@ -1,5 +1,5 @@
 /*
- * Sensor manager — one sampling thread driving the kmm-pmask sensor
+ * Sensor manager — one sampling thread driving the CPAP-PI sensor
  * set at the budgeted rates:
  *
  *   tick = 10 ms (100 Hz), absolute-deadline scheduled

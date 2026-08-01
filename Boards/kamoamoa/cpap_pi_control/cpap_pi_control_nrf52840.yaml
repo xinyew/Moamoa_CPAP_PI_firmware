@@ -1,5 +1,5 @@
 identifier: cpap_pi_control/nrf52840
-name: CPAP-PI-Sensor-Control
+name: CPAP-PI-Control
 type: mcu
 arch: arm
 toolchain:

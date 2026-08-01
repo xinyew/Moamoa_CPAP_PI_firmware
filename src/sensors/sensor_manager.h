@@ -6,7 +6,7 @@
 #include "ppg_reader.h"
 
 /* One 10 ms sampling tick. (ff/vref fields are legacy placeholders so
- * the dormant comm layer still compiles; the kmm-pmask redesign has no
+ * the dormant comm layer still compiles; the CPAP-PI redesign has no
  * FSR channels.)
  */
 struct tick_sample {
@@ -21,7 +21,7 @@ struct system_sensor_data {
     /* PPG (MAX30101 x4, 100 Hz) */
     struct ppg_sample ppg[PPG_COUNT];
 
-    /* Legacy FSR fields (unused on kmm-pmask; kept for comm compat) */
+    /* Legacy FSR fields (unused on CPAP-PI; kept for comm compat) */
     int32_t ff_mv[3];
     int32_t vref_mv;
     int32_t rfsr_ohm[3];

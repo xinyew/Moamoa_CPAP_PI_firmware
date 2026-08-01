@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Live BLE throughput / link-health test for the KMM PMask firmware.
+Live BLE throughput / link-health test for the CPAP-PI firmware.
 
-Connects to "KMM_PMask_Control", subscribes to the NUS stream and
+Connects to "CPAP_PI_Control", subscribes to the NUS stream and
 reports: DATA fps (target 25), total kB/s, and the in-band link
 health from the STATUS frame (drops/s, AIMD decimation, sensor
 rates, battery, validity masks).
@@ -43,9 +43,9 @@ async def main():
 
     print("scanning...")
     dev = await BleakScanner.find_device_by_filter(
-        lambda d, ad: d.name and d.name.startswith("KMM"), timeout=15.0)
+        lambda d, ad: d.name and d.name.startswith("CPAP"), timeout=15.0)
     if dev is None:
-        print("KMM_PMask_Control not found (powered? advertising?)")
+        print("CPAP_PI_Control not found (powered? advertising?)")
         return
 
     print(f"found {dev.name} [{dev.address}]")

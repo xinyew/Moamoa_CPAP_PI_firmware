@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KMM PMask SD Card Reader — doctor-facing viewer/exporter.
+CPAP-PI SD Card Reader — doctor-facing viewer/exporter.
 
 Insert the device's microSD card into this computer, then open this
 program. It finds the card automatically, shows which wall-clock time
@@ -235,7 +235,7 @@ def export_xlsx(session, t0_ms, t1_ms, path):
     from openpyxl import Workbook
 
     wb = Workbook(write_only=True)
-    ws = wb.create_sheet("KMM data")
+    ws = wb.create_sheet("CPAP-PI data")
     ws.append(EXPORT_COLS)
     n = 0
     for row in _rows_in_range(session, t0_ms, t1_ms):
@@ -264,7 +264,7 @@ def run_gui():
     state = {"sessions": [], "folder": None}
 
     root = tk.Tk()
-    root.title("KMM PMask — SD Card Reader")
+    root.title("CPAP-PI — SD Card Reader")
     root.geometry("1150x760")
 
     top = ttk.Frame(root, padding=8)
@@ -487,7 +487,7 @@ def run_gui():
         path = filedialog.asksaveasfilename(
             defaultextension=ext,
             filetypes=[("CSV" if kind == "csv" else "Excel", "*" + ext)],
-            initialfile=f"kmm_recording_{s.boot}{ext}")
+            initialfile=f"cpap_pi_recording_{s.boot}{ext}")
         if not path:
             return
         try:
@@ -536,7 +536,7 @@ def run_gui():
 # --------------------------------------------------------------------------
 
 def selftest(binfile=None):
-    tmp = tempfile.mkdtemp(prefix="kmm_selftest_")
+    tmp = tempfile.mkdtemp(prefix="cpap_selftest_")
     if binfile:
         import shutil
         shutil.copy(binfile, os.path.join(tmp, "B001S001.BIN"))

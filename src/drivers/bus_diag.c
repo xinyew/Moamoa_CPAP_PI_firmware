@@ -1,5 +1,5 @@
 /*
- * Bring-up diagnostics for the KMM PMask system.
+ * Bring-up diagnostics for the CPAP-PI system.
  *
  * - Asserts the PCA9517A repeater enable and reports mask presence
  *   (the mask grounds both PRESEN pins of the symmetric FFC).

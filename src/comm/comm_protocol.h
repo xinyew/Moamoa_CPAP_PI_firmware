@@ -2,7 +2,7 @@
 #define COMM_PROTOCOL_H
 
 /*
- * Binary stream protocol v2 — kmm-pmask 4-site topology (little-endian).
+ * Binary stream protocol v2 — CPAP-PI 4-site topology (little-endian).
  * Sent over BLE NUS (one frame per notification) and RTT up-buffer 1
  * (byte stream; re-framed on the magic by scripts/rtt_bridge.py).
  *

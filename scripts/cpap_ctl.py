@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KMM PMask BLE utility — throughput test and OTA DFU.
+CPAP-PI BLE utility — throughput test and OTA DFU.
 
 Two functions (ported from the caterpillar project's field-proven
 tooling; same firmware wire contracts):
@@ -14,10 +14,10 @@ tooling; same firmware wire contracts):
   on boot (~10 s of radio silence during the copy).
 
 Usage:
-    python kmm_ctl.py --tput            # throughput test, default 64 KiB
-    python kmm_ctl.py --tput 256        # ... custom amount
-    python kmm_ctl.py --dfu build/Moamoa_CPAP_PI_firmware/zephyr/zephyr.signed.bin
-    python kmm_ctl.py --name KMM_PMask_Control   # optional device filter
+    python cpap_ctl.py --tput            # throughput test, default 64 KiB
+    python cpap_ctl.py --tput 256        # ... custom amount
+    python cpap_ctl.py --dfu build/Moamoa_CPAP_PI_firmware/zephyr/zephyr.signed.bin
+    python cpap_ctl.py --name CPAP_PI_Control   # optional device filter
 
 Requires: pip install bleak            (throughput)
           pip install smpclient        (DFU)
@@ -30,7 +30,7 @@ import sys
 
 from bleak import BleakClient, BleakScanner
 
-DEVICE_PREFIX = "KMM"
+DEVICE_PREFIX = "CPAP"
 CHAR_UUID_TPUT = "0000ffe7-0000-1000-8000-00805f9b34fb"
 NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
@@ -211,7 +211,7 @@ async def dfu(device, path: str):
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="KMM PMask throughput test / OTA DFU")
+        description="CPAP-PI throughput test / OTA DFU")
     parser.add_argument("--tput", metavar="KIB", type=int, nargs="?",
                         const=64, default=None,
                         help="throughput test (default 64 KiB)")
