@@ -45,8 +45,17 @@ Power: battery → slide switch SW1 → P-FET → {TPS61202 5 V boost
 - i2c0 must run at **400 kHz** (`I2C_BITRATE_FAST` in the board DTS):
   ~26 mux-switched transactions per 10 ms tick don't fit at 100 kHz —
   this once caused a hidden 46 Hz sampling loop.
-- MAX30101 LED currents are set in the DTS (`led-pa`): R/IR 6.2 mA,
-  G 25.4 mA, ADC range 16384 — the 51 mA default saturates on skin.
+- MAX30101 LED currents are set in the DTS (`led-pa`): R/IR ~19.2 mA,
+  G ~35.2 mA (performance-tuned, 2026-09; was 6.2/25.4 mA), ADC range
+  16384 — the 51 mA default saturates on skin, so this isn't the
+  ceiling. `ppg_reader.c` captures a per-sensor ambient/dark baseline
+  at init and subtracts it, to buy back the headroom the higher
+  current costs.
+- `led-slot` uses the 4th (previously idle) slot to repeat IR
+  (`<1 2 3 2>`) for 2x hardware-averaged SNR on that channel — the
+  driver averages same-LED slots in `channel_get()`. `smp-ave = <4>`
+  adds further on-chip averaging at the same 100 Hz output rate, no
+  extra I2C/tick cost.
 - The 5 V boost has **no enable control** on this rev (EN tied to
   battery) — its quiescent draw exists whenever the switch is on.
   Next rev: EN from a GPIO; also planned: VTref sensing the true VDD.

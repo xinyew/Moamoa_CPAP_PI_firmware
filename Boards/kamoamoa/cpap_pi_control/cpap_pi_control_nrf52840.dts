@@ -155,11 +155,35 @@
 				compatible = "maxim,max30101";
 				reg = <0x57>;
 				acq-mode = "multi-led";
+				/* DO NOT enable all 4 slots (e.g. duplicating
+				 * a channel into slot 4): this NCS driver
+				 * hardcodes MAX30101_MAX_NUM_CHANNELS=3 (a 9
+				 * byte FIFO buffer, a 3-element raw[] array) —
+				 * 4 active slots overflows both on every
+				 * fetch. Learned the hard way; see power.md.
+				 */
 				led-slot = <1 2 3 0>; /* R, IR, G */
 				smp-sr = <100>;
 				led-pw = <411>;
+				/* smp-ave does NOT average-without-cost: it
+				 * decimates the FIFO's true refresh rate to
+				 * smp-sr/smp-ave (e.g. 4 -> 25 Hz here), and
+				 * our 100 Hz tick just re-reads the same
+				 * stale FIFO entry 3 out of 4 polls. Tried
+				 * smp-ave=4, caused a repeat-3x-then-jump
+				 * stairstep in the data. Left at default (1,
+				 * no averaging) so every 10 ms tick gets a
+				 * genuinely fresh sample. See power.md.
+				 */
 				fifo-rollover-en;
-				led-pa = [1f 1f 7f];
+				/* Performance-first: pushed well above the
+				 * previous 6.2/25.4 mA (max-performance pass,
+				 * power not a constraint). Below the 0xFF
+				 * default that's known to saturate on skin;
+				 * ppg_reader.c's ambient dark-reference buys
+				 * back the ADC headroom this costs.
+				 */
+				led-pa = [60 60 b0];
 				adc-rge = <16384>;
 			};
 
@@ -190,11 +214,19 @@
 				compatible = "maxim,max30101";
 				reg = <0x57>;
 				acq-mode = "multi-led";
-				led-slot = <1 2 3 0>;
+				led-slot = <1 2 3 0>; /* R, IR, G — see ppg1 note: no 4th slot */
 				smp-sr = <100>;
 				led-pw = <411>;
+				/* smp-ave left at default — see ppg1 note */
 				fifo-rollover-en;
-				led-pa = [1f 1f 7f];
+				/* Performance-first: pushed well above the
+				 * previous 6.2/25.4 mA (max-performance pass,
+				 * power not a constraint). Below the 0xFF
+				 * default that's known to saturate on skin;
+				 * ppg_reader.c's ambient dark-reference buys
+				 * back the ADC headroom this costs.
+				 */
+				led-pa = [60 60 b0];
 				adc-rge = <16384>;
 			};
 
@@ -214,11 +246,19 @@
 				compatible = "maxim,max30101";
 				reg = <0x57>;
 				acq-mode = "multi-led";
-				led-slot = <1 2 3 0>;
+				led-slot = <1 2 3 0>; /* R, IR, G — see ppg1 note: no 4th slot */
 				smp-sr = <100>;
 				led-pw = <411>;
+				/* smp-ave left at default — see ppg1 note */
 				fifo-rollover-en;
-				led-pa = [1f 1f 7f];
+				/* Performance-first: pushed well above the
+				 * previous 6.2/25.4 mA (max-performance pass,
+				 * power not a constraint). Below the 0xFF
+				 * default that's known to saturate on skin;
+				 * ppg_reader.c's ambient dark-reference buys
+				 * back the ADC headroom this costs.
+				 */
+				led-pa = [60 60 b0];
 				adc-rge = <16384>;
 			};
 
@@ -249,11 +289,19 @@
 				compatible = "maxim,max30101";
 				reg = <0x57>;
 				acq-mode = "multi-led";
-				led-slot = <1 2 3 0>;
+				led-slot = <1 2 3 0>; /* R, IR, G — see ppg1 note: no 4th slot */
 				smp-sr = <100>;
 				led-pw = <411>;
+				/* smp-ave left at default — see ppg1 note */
 				fifo-rollover-en;
-				led-pa = [1f 1f 7f];
+				/* Performance-first: pushed well above the
+				 * previous 6.2/25.4 mA (max-performance pass,
+				 * power not a constraint). Below the 0xFF
+				 * default that's known to saturate on skin;
+				 * ppg_reader.c's ambient dark-reference buys
+				 * back the ADC headroom this costs.
+				 */
+				led-pa = [60 60 b0];
 				adc-rge = <16384>;
 			};
 

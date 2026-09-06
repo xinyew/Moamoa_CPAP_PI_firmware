@@ -1,10 +1,21 @@
 # Power Management
 
-## Budget (datasheet arithmetic; battery-side unless noted)
+## 2026-09 direction change: PPG is performance-first, not power-first
+
+The rest of this doc (and the levers below) predate a project decision
+to prioritize PPG signal quality over continuous-run power budget —
+intermittent (burst) sensing will eventually carry the power savings
+instead of a lean continuous mode. As of this pass, LED current has
+been raised well above the "Now (ACTIVE)" row below (see
+`docs/hardware.md`); the budget table's PPG row and totals are stale
+until re-measured. Intermittent-sensing scheduling itself is not yet
+implemented — see "Remaining levers" below, now the top item.
+
+## Budget (datasheet arithmetic; battery-side unless noted) — PPG row stale, see above
 
 | Consumer | Before optimization | Now (ACTIVE) | Now (STANDBY) |
 |---|---|---|---|
-| PPG LED drive (4× MAX30101, 3 LEDs, 411 µs @ ~97 Hz) | ~6–9 mA | ~6–9 mA | ~0 (SHDN) |
+| PPG LED drive (4× MAX30101, 3 LEDs, 411 µs @ ~97 Hz) | ~6–9 mA | ~6–9 mA (stale — raised 2026-09, not remeasured) | ~0 (SHDN) |
 | MS5611 conversions | ~1.3 mA @50 Hz | ~0.6 mA @25 Hz | 0 |
 | TMP117 ×3 | ~0.6 mA continuous | ~µA (one-shot) | 0 |
 | Presence pull-ups | ~0.5 mA (mask on) | ~0 (pulsed 100 µs/s) | ~0 |
@@ -42,12 +53,61 @@ inline with the battery is the way to get real numbers.
 
 ## Remaining levers (not implemented)
 
-- PPG pulse width 411 → 215 µs: halves the dominant LED energy for one
-  bit of ADC resolution. Do this first if more life is needed.
-- PPG site duty-cycling (e.g. 10 s/min spot checks): order-of-magnitude,
-  needs a clinical decision.
+- **PPG intermittent sensing (e.g. 10 s on / 10 min off)** — now the
+  primary lever, not optional: this is what will make the raised LED
+  current affordable on average. Deliberately deferred as a separate
+  pass (state machine in `sensor_manager.c`, composes with the
+  existing mask-presence STANDBY logic). Not implemented yet.
+- PPG pulse width 411 µs: intentionally left at the max-resolution
+  setting (opposite of the old power-saving direction — see above).
 - Next hardware rev: 5 V boost EN on a GPIO (kills the last always-on
   in STANDBY); rail LEDs already DNP.
+
+## Implemented, performance-first pass (2026-09)
+
+- **LED current raised**: R/IR 6.2→~19.2 mA, G 25.4→~35.2 mA
+  (`led-pa` in the DTS), still below the saturating 0xFF default.
+- **Ambient/dark baseline subtraction** (`ppg_reader.c`): LEDs forced
+  off once at init, one FIFO sample captured per sensor as a dark
+  reference, subtracted from every subsequent reading. Recovers the
+  ADC headroom the higher LED current spends, and removes ambient
+  room/sunlight DC offset from the signal. Captured once at boot only
+  — not re-calibrated periodically (that's tied to the deferred
+  intermittent-sensing work, where each burst would plausibly want a
+  fresh baseline after the sleep gap).
+- **`smp-ave = <4>` — tried and reverted (2026-09-06).** The binding
+  says on-chip averaging "can be averaged and **decimated**" — the
+  decimation is the part that matters: it drops the FIFO's true
+  refresh rate to `smp-sr/smp-ave` (25 Hz at 4x), it does *not* keep
+  100 Hz output with free noise reduction as originally assumed here.
+  Our 100 Hz tick still polls every 10 ms regardless, so 3 of every 4
+  polls just re-read the same not-yet-updated FIFO entry (confirmed:
+  MAX30101 returns the last valid entry, unadvanced, when read faster
+  than new data arrives). Showed up as an exact repeat-3x-then-jump
+  stairstep in the logged waveform. Left at default (1, no averaging)
+  so every tick gets an independent fresh sample. If real SNR gain
+  from averaging is wanted later, it has to come with either dropping
+  the tick's PPG poll rate to match `smp-sr/smp-ave`, or upping
+  `smp-sr` proportionally so the effective refresh rate stays 100 Hz
+  (e.g. `smp-sr=400`, `smp-ave=4` — unverified, would need the same
+  bench check).
+- **IR slot duplication — tried and reverted (2026-09-06).**
+  `led-slot = <1 2 3 2>` (repeating IR into the previously-idle 4th
+  slot) causes a real memory-safety bug in this NCS driver
+  (`zephyr/drivers/sensor/maxim/max30101/max30101.h`):
+  `MAX30101_MAX_NUM_CHANNELS` is hardcoded to `3` — the FIFO read
+  buffer (9 bytes) and `raw[]` array (3 elements) are sized for at
+  most 3 *active slots total*, not 3 distinct LEDs. Enabling a 4th
+  slot makes `total_channels = 4`, so `sample_fetch()` reads 12 bytes
+  into the 9-byte buffer and writes `raw[3]` past the array — which
+  overlaps `map[][]`, corrupting the channel-to-slot mapping on every
+  fetch. Manifested as PPG values freezing for ~1.2 s at a stretch
+  (confirmed via a captured CSV: device-side `t_ms` was gapless, so
+  frames were genuinely arriving — the payload itself was corrupted/
+  stale). **Do not enable all 4 slots on this driver version** for any
+  reason (duplication or otherwise) unless the driver's channel
+  buffers are patched to size off `total_channels` instead of the
+  hardcoded constant.
 
 ## Rules for future code
 
